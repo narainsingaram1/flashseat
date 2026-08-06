@@ -138,6 +138,8 @@ export function FlashSeat() {
           <p className="intro">Choose up to eight seats. Your selection becomes a protected ten-minute hold only after confirmation.</p>
           <div className="status-line"><span className={status.startsWith("Live") ? "live-dot" : "soft-dot"}/>{status}</div>
           <div className="legend"><span><i className="available"/>Available</span><span><i className="selected"/>Selected</span><span><i className="unavailable"/>Unavailable</span><span><i className="accessible">◇</i>Accessible</span></div>
+          <ol className="booking-steps"><li><b>01</b><span>Choose a section</span></li><li><b>02</b><span>Click available circles</span></li><li><b>03</b><span>Hold, then checkout</span></li></ol>
+          <Link href="/lab" className="lab-cta">Want to see 1,000 buyers collide? <b>Open System Lab →</b></Link>
         </aside>
 
         <div className="venue-card">

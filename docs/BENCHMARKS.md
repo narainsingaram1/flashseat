@@ -26,3 +26,13 @@ Targets are engineering goals. Measured values remain blank until the matching K
 - Correctness verification: pending
 
 Run a scenario with `k6 run --summary-export results/summary.json load-tests/scenarios/same-seat-contention.js`. Save raw output and fill this table before turning any number into a resume claim.
+
+## Interactive lab smoke result — 2026-08-06
+
+This is a measured correctness smoke test, not an HTTP throughput benchmark. On an Apple M4 with 16 GB RAM, 250 synchronized Go buyers targeted `balcony-32` through the containerized Redis and PostgreSQL services:
+
+| Buyers | Winners | Redis conflicts | Active DB claims | Internal errors | Wall time |
+|---:|---:|---:|---:|---:|---:|
+| 250 | 1 | 249 | 1 | 0 | 46 ms |
+
+The test passed the zero-double-booking invariant and released its winning hold afterward. K6 latency and throughput fields above remain intentionally unfilled until the separate network load scenarios run.

@@ -153,7 +153,7 @@ func (s *Store) CreateHold(ctx context.Context, eventID, userID, key, token stri
 		}
 		total += seat.PriceCents
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,user_id,event_type,metadata) VALUES($1,$2,$3,'hold.created',jsonb_build_object('seat_count',$4))`, eventID, holdID, userID, len(seats))
+	_, err = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,user_id,event_type,metadata) VALUES($1,$2,$3,'hold.created',jsonb_build_object('seat_count',$4::int))`, eventID, holdID, userID, len(seats))
 	if err != nil {
 		return reservation.Hold{}, err
 	}
@@ -340,6 +340,11 @@ func (s *Store) Order(ctx context.Context, id, userID string) (reservation.Order
 		return o, reservation.ErrForbidden
 	}
 	return o, nil
+}
+func (s *Store) ActiveClaims(ctx context.Context, seatID string) (int, error) {
+	var count int
+	err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM hold_items hi JOIN holds h ON h.id=hi.hold_id WHERE hi.seat_id=$1 AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now()`, seatID).Scan(&count)
+	return count, err
 }
 func (s *Store) ExpireBatch(ctx context.Context, limit int) ([][3]any, error) {
 	tx, err := s.Pool.Begin(ctx)

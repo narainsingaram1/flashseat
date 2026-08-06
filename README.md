@@ -17,6 +17,7 @@ FlashSeat is a portfolio-grade ticketing MVP with an editorial Next.js experienc
 - Run multiple API and worker replicas without double-transitioning a hold.
 - Observe Prometheus HTTP request, conflict, and latency metrics.
 - Exercise contention, journey, expiration, replay, soak, and 10K-VU spike profiles with K6.
+- Launch 2–1,000 simultaneous buyers from the browser and inspect the one-winner invariant immediately.
 
 ## Quick start
 
@@ -59,6 +60,10 @@ The critical path intentionally uses two layers with different responsibilities:
 5. Checkout locks the hold, verifies ownership and authoritative database time, creates exactly one order, and releases the Redis leases after commit.
 
 Redis TTL notifications are deliberately not a correctness dependency. A worker continuously claims overdue holds in bounded `FOR UPDATE SKIP LOCKED` batches, transitions them exactly once, and releases token-owned lease keys. See [the architecture notes](docs/ARCHITECTURE.md).
+
+## Interactive demonstration
+
+Open the **System Lab** and choose an available target seat. Set the simulated buyer count from 2 to 1,000 and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. `LAB_ENABLED` is disabled by default outside Docker so this diagnostic endpoint is not accidentally exposed.
 
 ## API
 

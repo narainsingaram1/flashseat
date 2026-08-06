@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Addr, DatabaseURL, RedisAddr, WebOrigin string
 	HoldTTL, SweepInterval                  time.Duration
+	LabEnabled                              bool
 }
 
 func Load() Config {
@@ -16,6 +17,7 @@ func Load() Config {
 		Addr: env("API_ADDR", ":8080"), DatabaseURL: env("DATABASE_URL", "postgres://flashseat:flashseat@localhost:5432/flashseat?sslmode=disable"),
 		RedisAddr: env("REDIS_ADDR", "localhost:6379"), WebOrigin: env("WEB_ORIGIN", "http://localhost:3000"),
 		HoldTTL: seconds("HOLD_TTL_SECONDS", 600), SweepInterval: seconds("SWEEP_INTERVAL_SECONDS", 2),
+		LabEnabled: env("LAB_ENABLED", "false") == "true",
 	}
 }
 func env(k, fallback string) string {
