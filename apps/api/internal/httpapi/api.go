@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/flashseat/flashseat/apps/api/internal/config"
@@ -28,6 +27,7 @@ type API struct {
 	requests  *prometheus.CounterVec
 	latency   *prometheus.HistogramVec
 	conflicts prometheus.Counter
+	live      sync.Map
 }
 
 func New(cfg config.Config, s *store.Store, leases *reservation.Leases) *API {
@@ -51,13 +51,15 @@ func (a *API) Router() http.Handler {
 		r.Get("/events/{eventID}", a.event)
 		r.Get("/events/{eventID}/seats", a.seats)
 		r.Get("/events/{eventID}/stream", a.stream)
-		r.Post("/holds", a.createHold)
+		r.With(a.observeBenchmarkHold).Post("/holds", a.createHold)
 		r.Get("/holds/{holdID}", a.hold)
 		r.Delete("/holds/{holdID}", a.release)
 		r.Post("/holds/{holdID}/checkout", a.checkout)
 		r.Get("/orders/{orderID}", a.order)
-		r.Post("/lab/contention", a.contentionLab)
-		r.Get("/lab/results", a.labResults)
+		r.Post("/benchmarks", a.createBenchmark)
+		r.Get("/benchmarks/results", a.benchmarkResults)
+		r.Get("/benchmarks/{benchmarkID}/live", a.benchmarkLive)
+		r.Get("/benchmarks/{benchmarkID}", a.benchmark)
 	})
 	return r
 }
@@ -322,103 +324,6 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
-}
-
-type contentionInput struct {
-	EventID string `json:"eventId"`
-	SeatID  string `json:"seatId"`
-	Users   int    `json:"users"`
-}
-
-func (a *API) contentionLab(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.LabEnabled {
-		problem(w, 404, "lab_disabled", "the interactive lab is disabled")
-		return
-	}
-	var in contentionInput
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
-		problem(w, 422, "invalid_json", "invalid request body")
-		return
-	}
-	if in.EventID == "" || in.SeatID == "" || in.Users < 2 || in.Users > 10000 {
-		problem(w, 422, "invalid_lab_input", "choose one seat and between 2 and 10,000 simulated users")
-		return
-	}
-	started := time.Now()
-	start := make(chan struct{})
-	var winners, conflicts, failures atomic.Int64
-	type winner struct{ holdID, userID, token string }
-	var won winner
-	var wonMu sync.Mutex
-	var group sync.WaitGroup
-	for i := 0; i < in.Users; i++ {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			<-start
-			user, token := uuid.NewString(), uuid.NewString()
-			leased, err := a.leases.Acquire(r.Context(), in.EventID, []string{in.SeatID}, token, a.cfg.HoldTTL)
-			if err != nil {
-				failures.Add(1)
-				return
-			}
-			if !leased {
-				conflicts.Add(1)
-				return
-			}
-			h, err := a.store.CreateHold(r.Context(), in.EventID, user, "lab-"+uuid.NewString(), token, []string{in.SeatID}, a.cfg.HoldTTL)
-			if err != nil {
-				_ = a.leases.Release(r.Context(), in.EventID, []string{in.SeatID}, token)
-				if errors.Is(err, reservation.ErrConflict) {
-					conflicts.Add(1)
-				} else {
-					failures.Add(1)
-				}
-				return
-			}
-			winners.Add(1)
-			wonMu.Lock()
-			won = winner{holdID: h.ID, userID: user, token: token}
-			wonMu.Unlock()
-		}()
-	}
-	close(start)
-	group.Wait()
-	claims, err := a.store.ActiveClaims(r.Context(), in.SeatID)
-	if err != nil {
-		internal(w, r, err)
-		return
-	}
-	wonMu.Lock()
-	captured := won
-	wonMu.Unlock()
-	if captured.holdID != "" {
-		_, token, ids, releaseErr := a.store.Release(r.Context(), captured.holdID, captured.userID, "released")
-		if releaseErr == nil {
-			_ = a.leases.Release(r.Context(), in.EventID, ids, token)
-		}
-	}
-	a.leases.Publish(r.Context(), in.EventID)
-	winnerCount, conflictCount, failureCount := winners.Load(), conflicts.Load(), failures.Load()
-	run, err := a.store.SaveLabRun(r.Context(), store.LabRun{EventID: in.EventID, SeatID: in.SeatID, Users: in.Users, Winners: winnerCount, Conflicts: conflictCount, Errors: failureCount, DatabaseActiveClaims: claims, DurationMS: time.Since(started).Milliseconds(), InvariantPassed: winnerCount == 1 && claims == 1 && failureCount == 0})
-	if err != nil {
-		internal(w, r, err)
-		return
-	}
-	jsonOut(w, 200, run)
-}
-
-func (a *API) labResults(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.LabEnabled {
-		problem(w, 404, "lab_disabled", "the interactive lab is disabled")
-		return
-	}
-	results, err := a.store.LabResults(r.Context())
-	if err != nil {
-		internal(w, r, err)
-		return
-	}
-	jsonOut(w, 200, results)
 }
 
 func jsonOut(w http.ResponseWriter, status int, v any) {

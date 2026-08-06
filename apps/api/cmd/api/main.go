@@ -34,6 +34,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer s.Close()
+	if err := s.FailInterruptedBenchmarks(ctx); err != nil {
+		slog.Error("could not reconcile interrupted benchmarks", "error", err)
+		os.Exit(1)
+	}
 	leases := reservation.NewLeases(cfg.RedisAddr)
 	defer leases.Close()
 	api := httpapi.New(cfg, s, leases)

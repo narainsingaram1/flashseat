@@ -33,12 +33,25 @@ services:
       WEB_ORIGIN: http://localhost:3000
       HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-600}
       LAB_ENABLED: "true"
+      LOADGEN_URL: http://loadgen:8090
+      BENCHMARK_TARGET_URL: http://api:8080/api/v1
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
       test: ["CMD","/api","-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  loadgen:
+    build: ./apps/loadgen
+    environment:
+      ALLOWED_TARGET_URL: http://api:8080/api/v1
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/health"]
       interval: 10s
       timeout: 3s
       retries: 5

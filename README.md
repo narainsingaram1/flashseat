@@ -2,24 +2,24 @@
 
 **A high-concurrency assigned-seat reservation engine built for the exact moment everyone clicks “buy.”**
 
-FlashSeat is a portfolio-grade concurrency lab with a focused Next.js simulation experience and a Go reservation engine backed by PostgreSQL and Redis. It demonstrates atomic seat contention, deterministic row locking, persistent proof history, and reproducible K6 load tests.
+FlashSeat is a portfolio-grade HTTP concurrency lab with a focused Next.js control surface and a Go reservation engine backed by PostgreSQL and Redis. A separate K6 container creates real sessions, synchronizes independent HTTP buyers, calls the public hold endpoint, and stores latency, throughput, and database correctness evidence.
 
 > Performance numbers in this repository are targets until a benchmark run is recorded in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Correctness claims are enforced by the database design and test scenarios; they are not fabricated throughput claims.
 
 ## What works
 
-- Run the concurrency simulator directly from the home page.
-- Choose 1,000, 5,000, or 10,000 simultaneous buyers targeting one live seat.
-- See the one winner, rejected conflicts, database claims, errors, and timing clearly.
-- Save every run in PostgreSQL and showcase aggregate proof on a dedicated results page.
+- Run a real external HTTP contention benchmark directly from the home page.
+- Start with 100, 500, or 1,000 synchronized clients; use the advanced control for up to 10,000 when hardware permits.
+- See measured K6 request rate, P50/P95/P99 latency, HTTP 201/409 outcomes, and PostgreSQL claim counts.
+- Watch an honest live request arena driven by job-scoped API response counters, with compressed buyer packets, exact progress, and browser-sampled response bursts.
+- Save every benchmark job and raw summary in PostgreSQL and showcase aggregate evidence on a dedicated results page.
 - Run multiple API and worker replicas without double-transitioning a hold.
 - Observe Prometheus HTTP request, conflict, and latency metrics.
 - Exercise contention, journey, expiration, replay, soak, and 10K-VU spike profiles with K6.
-- Launch up to 10,000 simultaneous buyers from the browser and inspect the one-winner invariant immediately.
 
 ## Quick start
 
-Prerequisites: Docker Desktop with Compose. K6 is needed only for load testing.
+Prerequisite: Docker Desktop with Compose. K6 is already pinned inside the dedicated load-generator image; no host installation is required.
 
 ```bash
 cp .env.example .env
@@ -28,8 +28,8 @@ docker compose up --build
 
 Open:
 
-- Simulation Lab: http://localhost:3000
-- Saved Results: http://localhost:3000/results
+- HTTP Contention Lab: http://localhost:3000
+- Results & Evidence: http://localhost:3000/results
 - API readiness: http://localhost:8080/health/ready
 - Prometheus metrics: http://localhost:8080/metrics
 
@@ -59,9 +59,11 @@ The critical path intentionally uses two layers with different responsibilities:
 
 Redis TTL notifications are deliberately not a correctness dependency. A worker continuously claims overdue holds in bounded `FOR UPDATE SKIP LOCKED` batches, transitions them exactly once, and releases token-owned lease keys. See [the architecture notes](docs/ARCHITECTURE.md).
 
-## Interactive demonstration
+## Interactive HTTP benchmark
 
-Open the home page, choose a 1,000, 5,000, or 10,000-buyer preset, and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. Each run is saved to PostgreSQL and appears on the dedicated `/results` proof page with aggregate totals and resume-safe wording. `LAB_ENABLED` is disabled by default outside Docker so these diagnostic endpoints are not accidentally exposed.
+Open the home page, choose 100, 500, or 1,000 clients, and select **Run HTTP benchmark**. The control API creates a durable job. A separate non-root K6 container then creates one demo session per virtual user, waits at a shared time barrier, and sends every buyer through the real `POST /api/v1/holds` endpoint. After K6 finishes, the API queries PostgreSQL for active claims before releasing the test winner. The `/results` page excludes the older in-process smoke runs and displays only these external HTTP jobs.
+
+Only one benchmark may run at a time. The load generator accepts one hard-coded scenario and one allowlisted internal API target; it is not an open load-testing proxy.
 
 ## API
 
@@ -78,6 +80,10 @@ All product routes are under `/api/v1`:
 | GET / DELETE | `/holds/{holdId}` | Read or release an owned hold |
 | POST | `/holds/{holdId}/checkout` | Idempotent simulated checkout |
 | GET | `/orders/{orderId}` | Read an owned order |
+| POST | `/benchmarks` | Queue an allowlisted same-seat HTTP benchmark |
+| GET | `/benchmarks/{benchmarkId}` | Poll a durable benchmark job |
+| GET | `/benchmarks/{benchmarkId}/live` | Read exact in-flight hold response counters |
+| GET | `/benchmarks/results` | Aggregate and recent benchmark evidence |
 
 Mutating requests require `Idempotency-Key`. The browser demo uses an HTTP-only session cookie. Stable JSON errors use `code`, `message`, and `status`. The contract is in [docs/openapi.yaml](docs/openapi.yaml).
 
@@ -110,6 +116,7 @@ Other profiles are in `load-tests/scenarios`: hot section, expiration churn, ide
 ```text
 app/                  Next.js simulation and saved-results routes
 apps/api/             Go API, reconciliation worker, and tests
+apps/loadgen/         Allowlisted K6 orchestration service and HTTP scenario
 infra/migrations/     PostgreSQL schema, constraints, and seed event
 infra/redis/          Auditable Lua lock/release scripts
 infra/prometheus/     Metrics scrape configuration
