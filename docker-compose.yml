@@ -1,0 +1,71 @@
+name: flashseat
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: flashseat
+      POSTGRES_USER: flashseat
+      POSTGRES_PASSWORD: flashseat
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashseat -d flashseat"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:8.2.0-alpine
+    command: ["redis-server","--appendonly","yes","--notify-keyspace-events","Ex"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./apps/api
+    environment:
+      DATABASE_URL: postgres://flashseat:flashseat@postgres:5432/flashseat?sslmode=disable
+      REDIS_ADDR: redis:6379
+      WEB_ORIGIN: http://localhost:3000
+      HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-600}
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD","/api","-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  worker:
+    build: ./apps/api
+    entrypoint: ["/worker"]
+    environment:
+      DATABASE_URL: postgres://flashseat:flashseat@postgres:5432/flashseat?sslmode=disable
+      REDIS_ADDR: redis:6379
+      SWEEP_INTERVAL_SECONDS: 2
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  web:
+    build: .
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080/api/v1
+    ports: ["3000:3000"]
+    depends_on: [api]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observability"]
+    volumes: ["./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: ["observability"]
+    environment: { GF_SECURITY_ADMIN_PASSWORD: flashseat }
+    volumes: ["./infra/grafana/provisioning:/etc/grafana/provisioning:ro"]
+    ports: ["3001:3000"]
+volumes: { postgres-data: {}, redis-data: {} }

@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info: { title: FlashSeat API, version: 1.0.0, description: Atomic assigned-seat holds and idempotent checkout. }
+servers: [{ url: "http://localhost:8080/api/v1" }]
+paths:
+  /sessions/demo:
+    post: { summary: Create or restore a demo session, responses: { "200": { description: Session cookie set } } }
+  /events:
+    get: { summary: List events, responses: { "200": { description: Event collection } } }
+  /events/{eventId}:
+    get: { summary: Get an event, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: Event } } }
+  /events/{eventId}/seats:
+    get: { summary: Get authoritative inventory snapshot, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: Seat collection plus server time } } }
+  /events/{eventId}/stream:
+    get: { summary: Stream inventory invalidations using SSE, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: text/event-stream } } }
+  /holds:
+    post:
+      summary: Atomically hold one to eight seats
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HoldRequest" } } } }
+      responses: { "201": { description: Hold created }, "200": { description: Idempotent replay }, "409": { description: Seat unavailable }, "422": { description: Invalid seat set } }
+  /holds/{holdId}:
+    get: { summary: Get an owned hold, parameters: [{ $ref: "#/components/parameters/HoldId" }], responses: { "200": { description: Hold }, "410": { description: Hold expired } } }
+    delete: { summary: Release an owned hold, parameters: [{ $ref: "#/components/parameters/HoldId" }], responses: { "204": { description: Released } } }
+  /holds/{holdId}/checkout:
+    post: { summary: Idempotently complete simulated checkout, parameters: [{ $ref: "#/components/parameters/HoldId" }, { $ref: "#/components/parameters/IdempotencyKey" }], responses: { "200": { description: Order created or replayed }, "410": { description: Hold expired } } }
+  /orders/{orderId}:
+    get: { summary: Get an owned order, parameters: [{ name: orderId, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: Order } } }
+components:
+  parameters:
+    EventId: { name: eventId, in: path, required: true, schema: { type: string } }
+    HoldId: { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 100 } }
+  schemas:
+    HoldRequest:
+      type: object
+      required: [eventId, seatIds]
+      properties: { eventId: { type: string }, seatIds: { type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: { type: string } } }
