@@ -63,7 +63,7 @@ Redis TTL notifications are deliberately not a correctness dependency. A worker 
 
 ## Interactive demonstration
 
-Open the **System Lab** and choose an available target seat. Set the simulated buyer count from 2 to 1,000 and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. `LAB_ENABLED` is disabled by default outside Docker so this diagnostic endpoint is not accidentally exposed.
+Open the **System Lab**, choose a 100, 500, or 1,000-buyer preset, and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. Each run is saved to PostgreSQL and appears on the dedicated `/results` proof page with aggregate totals and resume-safe wording. `LAB_ENABLED` is disabled by default outside Docker so these diagnostic endpoints are not accidentally exposed.
 
 ## API
 

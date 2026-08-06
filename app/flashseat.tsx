@@ -117,7 +117,7 @@ export function FlashSeat() {
       <header className="nav shell">
         <Link href="/" className="brand" aria-label="FlashSeat home"><span>F</span> FLASHSEAT</Link>
         <div className="edition">EDITION 01 / LIVE INVENTORY</div>
-        <nav><Link href="/lab">SYSTEM LAB ↗</Link></nav>
+        <nav className="nav-links"><Link href="/lab">RUN SIMULATION</Link><Link href="/results">RESULTS</Link></nav>
       </header>
 
       <section className="hero shell">

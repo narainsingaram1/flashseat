@@ -23,6 +23,31 @@ type Event struct {
 }
 type Store struct{ Pool *pgxpool.Pool }
 
+type LabRun struct {
+	ID                   int64     `json:"id"`
+	EventID              string    `json:"eventId"`
+	SeatID               string    `json:"seatId"`
+	Users                int       `json:"users"`
+	Winners              int64     `json:"winners"`
+	Conflicts            int64     `json:"conflicts"`
+	Errors               int64     `json:"errors"`
+	DatabaseActiveClaims int       `json:"databaseActiveClaims"`
+	DurationMS           int64     `json:"durationMs"`
+	InvariantPassed      bool      `json:"invariantPassed"`
+	CreatedAt            time.Time `json:"createdAt"`
+}
+type LabResults struct {
+	TotalRuns         int64    `json:"totalRuns"`
+	TotalBuyers       int64    `json:"totalBuyers"`
+	TotalConflicts    int64    `json:"totalConflicts"`
+	TotalErrors       int64    `json:"totalErrors"`
+	PassedRuns        int64    `json:"passedRuns"`
+	DoubleBookings    int64    `json:"doubleBookings"`
+	AverageDurationMS float64  `json:"averageDurationMs"`
+	MaxUsers          int      `json:"maxUsers"`
+	Recent            []LabRun `json:"recent"`
+}
+
 func Open(ctx context.Context, url string) (*Store, error) {
 	p, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -345,6 +370,30 @@ func (s *Store) ActiveClaims(ctx context.Context, seatID string) (int, error) {
 	var count int
 	err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM hold_items hi JOIN holds h ON h.id=hi.hold_id WHERE hi.seat_id=$1 AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now()`, seatID).Scan(&count)
 	return count, err
+}
+func (s *Store) SaveLabRun(ctx context.Context, run LabRun) (LabRun, error) {
+	err := s.Pool.QueryRow(ctx, `INSERT INTO lab_runs(event_id,seat_id,simulated_users,winners,conflicts,errors,database_active_claims,duration_ms,invariant_passed) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,created_at`, run.EventID, run.SeatID, run.Users, run.Winners, run.Conflicts, run.Errors, run.DatabaseActiveClaims, run.DurationMS, run.InvariantPassed).Scan(&run.ID, &run.CreatedAt)
+	return run, err
+}
+func (s *Store) LabResults(ctx context.Context) (LabResults, error) {
+	out := LabResults{Recent: []LabRun{}}
+	err := s.Pool.QueryRow(ctx, `SELECT count(*),COALESCE(sum(simulated_users),0),COALESCE(sum(conflicts),0),COALESCE(sum(errors),0),count(*) FILTER (WHERE invariant_passed),count(*) FILTER (WHERE winners>1 OR database_active_claims>1),COALESCE(avg(duration_ms),0),COALESCE(max(simulated_users),0) FROM lab_runs`).Scan(&out.TotalRuns, &out.TotalBuyers, &out.TotalConflicts, &out.TotalErrors, &out.PassedRuns, &out.DoubleBookings, &out.AverageDurationMS, &out.MaxUsers)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT id,event_id,seat_id,simulated_users,winners,conflicts,errors,database_active_claims,duration_ms,invariant_passed,created_at FROM lab_runs ORDER BY created_at DESC LIMIT 20`)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var run LabRun
+		if err = rows.Scan(&run.ID, &run.EventID, &run.SeatID, &run.Users, &run.Winners, &run.Conflicts, &run.Errors, &run.DatabaseActiveClaims, &run.DurationMS, &run.InvariantPassed, &run.CreatedAt); err != nil {
+			return out, err
+		}
+		out.Recent = append(out.Recent, run)
+	}
+	return out, rows.Err()
 }
 func (s *Store) ExpireBatch(ctx context.Context, limit int) ([][3]any, error) {
 	tx, err := s.Pool.Begin(ctx)

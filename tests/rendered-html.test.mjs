@@ -22,6 +22,15 @@ test("server-renders the System Lab", async () => {
   const response = await render("/lab");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /SYSTEM LAB/);
-  assert.match(html, /PostgreSQL is authoritative/i);
+  assert.match(html, /SIMULATION LAB/);
+  assert.match(html, /LAUNCH/);
+  assert.match(html, /Choose the crowd/i);
+});
+
+test("server-renders the saved results dashboard", async () => {
+  const response = await render("/results");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /PROOF ARCHIVE/);
+  assert.match(html, /SAVED TEST HISTORY/);
 });

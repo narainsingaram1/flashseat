@@ -57,6 +57,7 @@ func (a *API) Router() http.Handler {
 		r.Post("/holds/{holdID}/checkout", a.checkout)
 		r.Get("/orders/{orderID}", a.order)
 		r.Post("/lab/contention", a.contentionLab)
+		r.Get("/lab/results", a.labResults)
 	})
 	return r
 }
@@ -399,12 +400,25 @@ func (a *API) contentionLab(w http.ResponseWriter, r *http.Request) {
 	}
 	a.leases.Publish(r.Context(), in.EventID)
 	winnerCount, conflictCount, failureCount := winners.Load(), conflicts.Load(), failures.Load()
-	jsonOut(w, 200, map[string]any{
-		"users": in.Users, "seatId": in.SeatID, "winners": winnerCount,
-		"conflicts": conflictCount, "errors": failureCount, "databaseActiveClaims": claims,
-		"durationMs":      time.Since(started).Milliseconds(),
-		"invariantPassed": winnerCount == 1 && claims == 1 && failureCount == 0,
-	})
+	run, err := a.store.SaveLabRun(r.Context(), store.LabRun{EventID: in.EventID, SeatID: in.SeatID, Users: in.Users, Winners: winnerCount, Conflicts: conflictCount, Errors: failureCount, DatabaseActiveClaims: claims, DurationMS: time.Since(started).Milliseconds(), InvariantPassed: winnerCount == 1 && claims == 1 && failureCount == 0})
+	if err != nil {
+		internal(w, r, err)
+		return
+	}
+	jsonOut(w, 200, run)
+}
+
+func (a *API) labResults(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.LabEnabled {
+		problem(w, 404, "lab_disabled", "the interactive lab is disabled")
+		return
+	}
+	results, err := a.store.LabResults(r.Context())
+	if err != nil {
+		internal(w, r, err)
+		return
+	}
+	jsonOut(w, 200, results)
 }
 
 func jsonOut(w http.ResponseWriter, status int, v any) {

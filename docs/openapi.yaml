@@ -31,6 +31,11 @@ paths:
       description: Requires LAB_ENABLED=true. The winning test hold is released after verification.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [eventId, seatId, users], properties: { eventId: { type: string }, seatId: { type: string }, users: { type: integer, minimum: 2, maximum: 1000 } } } } } }
       responses: { "200": { description: Winner, conflict, database-claim, error, and duration results }, "404": { description: Lab disabled } }
+  /lab/results:
+    get:
+      summary: Read aggregate and recent saved simulation results
+      description: Requires LAB_ENABLED=true.
+      responses: { "200": { description: Totals, pass rate inputs, double-booking count, timing average, and twenty recent runs }, "404": { description: Lab disabled } }
 components:
   parameters:
     EventId: { name: eventId, in: path, required: true, schema: { type: string } }
