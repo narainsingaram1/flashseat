@@ -340,8 +340,8 @@ func (a *API) contentionLab(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "invalid_json", "invalid request body")
 		return
 	}
-	if in.EventID == "" || in.SeatID == "" || in.Users < 2 || in.Users > 1000 {
-		problem(w, 422, "invalid_lab_input", "choose one seat and between 2 and 1,000 simulated users")
+	if in.EventID == "" || in.SeatID == "" || in.Users < 2 || in.Users > 10000 {
+		problem(w, 422, "invalid_lab_input", "choose one seat and between 2 and 10,000 simulated users")
 		return
 	}
 	started := time.Now()

@@ -1,5 +1,3 @@
-import { FlashSeat } from "./flashseat";
+import { LabConsole } from "./lab/console";
 
-export default function Home() {
-  return <FlashSeat />;
-}
+export default function Home() { return <LabConsole />; }

@@ -29,7 +29,7 @@ paths:
     post:
       summary: Run a local-only same-seat contention demonstration
       description: Requires LAB_ENABLED=true. The winning test hold is released after verification.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [eventId, seatId, users], properties: { eventId: { type: string }, seatId: { type: string }, users: { type: integer, minimum: 2, maximum: 1000 } } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [eventId, seatId, users], properties: { eventId: { type: string }, seatId: { type: string }, users: { type: integer, minimum: 2, maximum: 10000 } } } } } }
       responses: { "200": { description: Winner, conflict, database-claim, error, and duration results }, "404": { description: Lab disabled } }
   /lab/results:
     get:

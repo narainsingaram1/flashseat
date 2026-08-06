@@ -34,5 +34,6 @@ This is a measured correctness smoke test, not an HTTP throughput benchmark. On 
 | Buyers | Winners | Redis conflicts | Active DB claims | Internal errors | Wall time |
 |---:|---:|---:|---:|---:|---:|
 | 250 | 1 | 249 | 1 | 0 | 46 ms |
+| 10,000 | 1 | 9,999 | 1 | 0 | 152 ms |
 
-The test passed the zero-double-booking invariant and released its winning hold afterward. K6 latency and throughput fields above remain intentionally unfilled until the separate network load scenarios run.
+Both tests passed the zero-double-booking invariant and released their winning holds afterward. The 10,000-buyer run was measured on the same Apple M4 / 16 GB machine on 2026-08-06. K6 latency and throughput fields above remain intentionally unfilled until the separate network load scenarios run.

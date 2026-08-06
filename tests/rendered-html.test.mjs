@@ -8,23 +8,14 @@ async function render(path = "/") {
   return worker.fetch(new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }), { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } }, { waitUntil() {}, passThroughOnException() {} });
 }
 
-test("server-renders the FlashSeat event", async () => {
+test("server-renders the FlashSeat simulation lab at the root", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /FlashSeat/);
-  assert.match(html, /Aurora/);
-  assert.match(html, /Engineered for the rush/i);
-  assert.doesNotMatch(html, /codex-preview/);
-});
-
-test("server-renders the System Lab", async () => {
-  const response = await render("/lab");
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /SIMULATION LAB/);
+  assert.match(html, /FLASHSEAT LAB/);
+  assert.match(html, /10,000 buyers/);
   assert.match(html, /LAUNCH/);
-  assert.match(html, /Choose the crowd/i);
+  assert.doesNotMatch(html, /codex-preview/);
 });
 
 test("server-renders the saved results dashboard", async () => {

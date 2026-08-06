@@ -2,22 +2,20 @@
 
 **A high-concurrency assigned-seat reservation engine built for the exact moment everyone clicks “buy.”**
 
-FlashSeat is a portfolio-grade ticketing MVP with an editorial Next.js experience and a Go reservation service backed by PostgreSQL and Redis. It demonstrates atomic multi-seat holds, deterministic row locking, idempotent checkout, expiring inventory, real-time updates, and reproducible K6 contention tests.
+FlashSeat is a portfolio-grade concurrency lab with a focused Next.js simulation experience and a Go reservation engine backed by PostgreSQL and Redis. It demonstrates atomic seat contention, deterministic row locking, persistent proof history, and reproducible K6 load tests.
 
 > Performance numbers in this repository are targets until a benchmark run is recorded in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Correctness claims are enforced by the database design and test scenarios; they are not fabricated throughput claims.
 
 ## What works
 
-- Browse a seeded 96-seat fictional arena event and filter three sections.
-- Select exact seats using an accessible, responsive venue map.
-- Atomically hold up to eight seats for ten minutes—every seat or none.
-- See other clients update through server-sent inventory invalidations.
-- Release, expire, or complete a hold through deterministic simulated checkout.
-- Retry hold creation and checkout safely with idempotency keys.
+- Run the concurrency simulator directly from the home page.
+- Choose 1,000, 5,000, or 10,000 simultaneous buyers targeting one live seat.
+- See the one winner, rejected conflicts, database claims, errors, and timing clearly.
+- Save every run in PostgreSQL and showcase aggregate proof on a dedicated results page.
 - Run multiple API and worker replicas without double-transitioning a hold.
 - Observe Prometheus HTTP request, conflict, and latency metrics.
 - Exercise contention, journey, expiration, replay, soak, and 10K-VU spike profiles with K6.
-- Launch 2–1,000 simultaneous buyers from the browser and inspect the one-winner invariant immediately.
+- Launch up to 10,000 simultaneous buyers from the browser and inspect the one-winner invariant immediately.
 
 ## Quick start
 
@@ -30,8 +28,8 @@ docker compose up --build
 
 Open:
 
-- Web experience: http://localhost:3000
-- System Lab: http://localhost:3000/lab
+- Simulation Lab: http://localhost:3000
+- Saved Results: http://localhost:3000/results
 - API readiness: http://localhost:8080/health/ready
 - Prometheus metrics: http://localhost:8080/metrics
 
@@ -63,7 +61,7 @@ Redis TTL notifications are deliberately not a correctness dependency. A worker 
 
 ## Interactive demonstration
 
-Open the **System Lab**, choose a 100, 500, or 1,000-buyer preset, and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. Each run is saved to PostgreSQL and appears on the dedicated `/results` proof page with aggregate totals and resume-safe wording. `LAB_ENABLED` is disabled by default outside Docker so these diagnostic endpoints are not accidentally exposed.
+Open the home page, choose a 1,000, 5,000, or 10,000-buyer preset, and select **Launch simulation**. The Go API releases every goroutine through one synchronization barrier, reports the Redis conflicts, verifies the active PostgreSQL claims, and automatically releases the test hold afterward. Each run is saved to PostgreSQL and appears on the dedicated `/results` proof page with aggregate totals and resume-safe wording. `LAB_ENABLED` is disabled by default outside Docker so these diagnostic endpoints are not accidentally exposed.
 
 ## API
 
@@ -110,7 +108,7 @@ Other profiles are in `load-tests/scenarios`: hot section, expiration churn, ide
 ## Repository map
 
 ```text
-app/                  Next.js event and System Lab routes
+app/                  Next.js simulation and saved-results routes
 apps/api/             Go API, reconciliation worker, and tests
 infra/migrations/     PostgreSQL schema, constraints, and seed event
 infra/redis/          Auditable Lua lock/release scripts
