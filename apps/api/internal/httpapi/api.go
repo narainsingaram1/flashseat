@@ -215,6 +215,10 @@ func (a *API) createHold(w http.ResponseWriter, r *http.Request) {
 	h, err := a.store.CreateHold(r.Context(), in.EventID, user, idem, token, ids, a.cfg.HoldTTL)
 	if err != nil {
 		_ = a.leases.Release(r.Context(), in.EventID, ids, token)
+		if existing, replayErr := a.store.HoldByKey(r.Context(), user, idem); replayErr == nil {
+			jsonOut(w, 200, existing)
+			return
+		}
 		if errors.Is(err, reservation.ErrConflict) {
 			a.conflicts.Inc()
 		}

@@ -267,6 +267,10 @@ func (s *Store) Checkout(ctx context.Context, holdID, userID, key string) (reser
 		return o, "", nil, reservation.ErrForbidden
 	}
 	if status != "active" {
+		replayErr := tx.QueryRow(ctx, `SELECT id,reference,hold_id,user_id,total_cents,created_at FROM orders WHERE hold_id=$1 AND user_id=$2 AND idempotency_key=$3`, holdID, userID, key).Scan(&o.ID, &o.Reference, &o.HoldID, &o.UserID, &o.TotalCents, &o.CreatedAt)
+		if replayErr == nil {
+			return o, "", nil, nil
+		}
 		return o, "", nil, reservation.ErrConflict
 	}
 	if reservation.IsExpired(expires, time.Now()) {
