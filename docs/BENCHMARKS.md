@@ -1,54 +1,40 @@
-# Benchmark report
+# Benchmarks
 
-Targets are engineering goals. Measured values below come only from accepted, barrier-verified K6 runs on the documented hardware.
+All runs: Apple M4, 16 GB RAM, Docker Desktop with an 8 GB VM. The load generator, both API replicas, PostgreSQL 17, Redis 8, nginx, and Toxiproxy all share that VM. Every run is stored in `simulation_runs` with its k6 summary, server metrics, final invariant check, and replay. Open `/runs` to see them.
 
-| Metric | Target | Measured |
+## FlashSeat vs. naive, same crowd
+
+Arena preset (9,000 seats), 6,000 buyers over 15 s, no waiting room, 10 s holds.
+
+| | FlashSeat | Naive |
 |---|---:|---:|
-| Same-seat winners | exactly 1 | 1 in two 100-VU runs, plus 500 and 1,000 VUs |
-| Sold-seat oversubscriptions | 0 | 0 |
-| Partial multi-seat holds | 0 | Not measured |
-| Unexpected HTTP failure rate | <1% | 0% |
-| API P95 | <100 ms | 59.7 ms worst accepted run |
-| API P99 | <250 ms | 64.0 ms worst accepted run |
-| Expiration recovery lag | <10 s | Not measured |
+| Distinct seats sold (PostgreSQL) | 8,581 | 4,182 |
+| Seats paid for by buyers (k6) | 8,581 | 10,659 |
+| Seats sold to 2+ buyers | 0 | 2,131 |
+| Holds created | 5,198 | 5,979 |
+| Holds expired, seats resold | 955 expired, 1,456 seats resold | 1,086 expired, 1,256 resold |
+| Lost races (server re-picked up to 4×, then 409) | 21 | n/a (never detected) |
+| Peak server requests/s | 1,314 | 1,226 |
 
-## Reproducible run record
+On FlashSeat, k6's client-side count and PostgreSQL agree to the seat. On naive, buyers were charged for 6,477 more seats than were actually sold.
 
-- Date/time: 2026-08-06, America/New_York
-- Git revision: `1b3c864` base plus the working-tree HTTP benchmark implementation
-- Machine/CPU/memory: Apple M4, 16 GB RAM
-- Docker resource limits: Docker Desktop local defaults; not separately pinned
-- Scenario: `same-seat-http`, one iteration per VU, shared timestamp barrier
-- Virtual users: 100, 500, and 1,000
-- Requests: 1,700 accepted `POST /holds` attempts
-- Expected contention responses: 1,696 total `409 Conflict`
-- PostgreSQL/Redis observations: exactly one live database claim per run; winner token-safely released after evidence persistence
-- Correctness verification: 0 barrier misses, 0 unexpected errors, 0 double-bookings in every accepted run
+## Contention is what breaks the naive engine
 
-Run the browser-controlled benchmark at `http://localhost:3000`. Each result and its raw K6 summary are saved in `benchmark_jobs` and shown at `/results`. For standalone scenarios, use `k6 run load-tests/scenarios/same-seat-contention.js`.
+Club preset (1,170 seats), 600 buyers over 8 s, waiting room admitting 100/s: the naive engine sold **0** seats twice. Holds arrived about 10 ms apart and each took about 1 ms, so the read-then-write races almost never overlapped. The waiting room was protecting the unsafe code. With the queue off and 2,000 buyers in 2 s, the naive engine sold 108 seats twice; FlashSeat sold 0.
 
-## Legacy in-process correctness smoke — 2026-08-06
+## Faults during a live sale
 
-This is a measured correctness smoke test, not an HTTP throughput benchmark. On an Apple M4 with 16 GB RAM, 250 synchronized Go buyers targeted `balcony-32` through the containerized Redis and PostgreSQL services:
+Arena, 6,000 buyers over 20 s, waiting room at 250/s. Faults injected in order: API replica killed (t = 4 s), Redis cut for 6 s (t = 11 s), PostgreSQL slowed by 80 ms ± 20 ms for 8 s (t = 18 s), Redis wiped (t = 26 s).
 
-| Buyers | Winners | Redis conflicts | Active DB claims | Internal errors | Wall time |
-|---:|---:|---:|---:|---:|---:|
-| 250 | 1 | 249 | 1 | 0 | 46 ms |
-| 10,000 | 1 | 9,999 | 1 | 0 | 152 ms |
+- 0 seats sold twice, 0 overlapping claims, 0 drift after recovery.
+- 3,843 holds failed closed with `503 redis_unavailable`, and 2,018 with `503 inventory_rebuilding` while the bitmap was restored from PostgreSQL.
+- Holds and checkouts that hit the 2 s PostgreSQL budget returned `503 timeout`. Their Redis claims were left to expire rather than released, because the outcome was unknown. Clients retry with the same idempotency key.
 
-Both tests passed the zero-double-booking invariant and released their winning holds afterward. These figures came from goroutines inside the API process, not external HTTP clients, so they are deliberately excluded from the product's Results page and must not be presented as HTTP load results.
+## Where latency goes, and what is not fixed
 
-## Browser-controlled external HTTP runs — 2026-08-06
-
-Measured on an Apple M4 with 16 GB RAM using Docker Desktop and the pinned `k6 v2.0.0` runner. The accepted evidence path was: separate K6 container → REST API → Redis/PostgreSQL → database invariant query → persisted raw summary.
-
-| HTTP buyers | 201 winners | 409 conflicts | Barrier misses | Unexpected errors | DB claims | Duplicates | P50 hold | P95 hold | P99 hold | Burst completion rate |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 | 99 | 0 | 0 | 1 | 0 | 30.7 ms | 45.0 ms | 46.5 ms | 2,144 attempts/s |
-| 100 repeat | 1 | 99 | 0 | 0 | 1 | 0 | 19.6 ms | 28.2 ms | 31.6 ms | 2,848 attempts/s |
-| 500 | 1 | 499 | 0 | 0 | 1 | 0 | 26.8 ms | 38.0 ms | 40.3 ms | 11,804 attempts/s |
-| 1,000 | 1 | 999 | 0 | 0 | 1 | 0 | 35.6 ms | 59.7 ms | 64.0 ms | 14,433 attempts/s |
-
-“Burst completion rate” is `seat attempts / slowest observed hold-request duration`; it describes the synchronized contention window, not sustained system throughput. Every accepted run recorded zero barrier misses, proving all VUs completed session setup before the shared release timestamp. Do not claim sustained 14K RPS or 10,000 tested VUs from these measurements.
-
-Earlier development runs are retained as `discarded` because they predated persisted barrier-miss verification or used an incomplete summary configuration. Discarded runs remain auditable but are excluded from aggregates.
+- **Low load.** Club venue, queue at 100/s: client hold P99 7 ms, checkout P99 11 ms.
+- **Rush.** Arena, 6,000 buyers in 15 s, no queue: server hold P50 15 ms, but P99 is around 1 s.
+  - Per-phase logging (`slow hold` lines in the API logs) shows slow requests are slow in every phase, including in-memory work, which means CPU starvation. During the rush, k6 uses 3–4 cores and PostgreSQL 2–4.5 cores of the 10.
+  - In isolation, commit `fsync` on Docker Desktop's virtual disk dominates: with `synchronous_commit=off`, P99 falls from about 175 ms to about 17 ms. Durability stays on.
+  - **Open follow-up:** sampling `pg_stat_activity` during a rush shows `fs_checkout` doing most of PostgreSQL's CPU work, with about a third of samples waiting on `Lock:transactionid`. The checkout path needs profiling (`EXPLAIN ANALYZE` inside the function, and lock-order analysis against lazy expiry) before the rush numbers are worth quoting.
+- Absolute numbers describe one laptop with the load generator on the same machine. The comparison between engines is the meaningful result.

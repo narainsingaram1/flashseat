@@ -1,3 +1,0 @@
-import exec from "k6/execution";import { check } from "k6";import { session,hold } from "../common.js";
-export const options={scenarios:{hot:{executor:"ramping-arrival-rate",startRate:20,timeUnit:"1s",preAllocatedVUs:100,maxVUs:1000,stages:[{target:200,duration:"30s"},{target:200,duration:"1m"},{target:0,duration:"15s"}]}},thresholds:{http_req_duration:["p(95)<100","p(99)<250"]}};
-export default function(){const c=session(),n=(exec.scenario.iterationInTest%12)+1,r=hold(c,[`orchestra-${n}`],`hot-${exec.vu.idInTest}-${exec.scenario.iterationInTest}`);check(r,{"held or contested":x=>x.status===201||x.status===409});}

@@ -1,57 +1,102 @@
 openapi: 3.1.0
-info: { title: FlashSeat API, version: 1.0.0, description: Atomic assigned-seat holds and idempotent checkout. }
-servers: [{ url: "http://localhost:8080/api/v1" }]
-paths:
-  /sessions/demo:
-    post: { summary: Create or restore a demo session, responses: { "200": { description: Session cookie set } } }
-  /events:
-    get: { summary: List events, responses: { "200": { description: Event collection } } }
-  /events/{eventId}:
-    get: { summary: Get an event, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: Event } } }
-  /events/{eventId}/seats:
-    get: { summary: Get authoritative inventory snapshot, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: Seat collection plus server time } } }
-  /events/{eventId}/stream:
-    get: { summary: Stream inventory invalidations using SSE, parameters: [{ $ref: "#/components/parameters/EventId" }], responses: { "200": { description: text/event-stream } } }
-  /holds:
-    post:
-      summary: Atomically hold one to eight seats
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HoldRequest" } } } }
-      responses: { "201": { description: Hold created }, "200": { description: Idempotent replay }, "409": { description: Seat unavailable }, "422": { description: Invalid seat set } }
-  /holds/{holdId}:
-    get: { summary: Get an owned hold, parameters: [{ $ref: "#/components/parameters/HoldId" }], responses: { "200": { description: Hold }, "410": { description: Hold expired } } }
-    delete: { summary: Release an owned hold, parameters: [{ $ref: "#/components/parameters/HoldId" }], responses: { "204": { description: Released } } }
-  /holds/{holdId}/checkout:
-    post: { summary: Idempotently complete simulated checkout, parameters: [{ $ref: "#/components/parameters/HoldId" }, { $ref: "#/components/parameters/IdempotencyKey" }], responses: { "200": { description: Order created or replayed }, "410": { description: Hold expired } } }
-  /orders/{orderId}:
-    get: { summary: Get an owned order, parameters: [{ name: orderId, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: Order } } }
-  /benchmarks:
-    post:
-      summary: Queue an external same-seat HTTP benchmark
-      description: Requires LAB_ENABLED=true. A separate allowlisted K6 service calls the public hold API; only one job may run at a time.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [eventId, seatId, users], properties: { eventId: { type: string }, seatId: { type: string }, users: { type: integer, minimum: 2, maximum: 10000 } } } } } }
-      responses: { "202": { description: Durable benchmark job queued }, "409": { description: Another job is queued or running }, "404": { description: Lab disabled } }
-  /benchmarks/{benchmarkId}:
-    get:
-      summary: Poll a durable benchmark job
-      parameters: [{ name: benchmarkId, in: path, required: true, schema: { type: string, format: uuid } }]
-      responses: { "200": { description: Job status, K6 metrics, and database invariant result }, "404": { description: Job not found } }
-  /benchmarks/{benchmarkId}/live:
-    get:
-      summary: Read exact in-flight HTTP response counters for one benchmark
-      parameters: [{ name: benchmarkId, in: path, required: true, schema: { type: string, format: uuid } }]
-      responses: { "200": { description: Target, attempts, winners, conflicts, errors, remaining requests, progress, and observed response-window rate }, "404": { description: Job not found } }
-  /benchmarks/results:
-    get:
-      summary: Read aggregate and recent external HTTP evidence
-      responses: { "200": { description: Accepted-run totals, measured latency and burst rate, invariant counts, and thirty recent jobs } }
+info:
+  title: FlashSeat API
+  version: 2.0.0
+  description: Waiting room, best-available holds, idempotent checkout, and the simulation control plane.
+servers: [{ url: http://localhost:8080/api/v1 }]
 components:
   parameters:
-    EventId: { name: eventId, in: path, required: true, schema: { type: string } }
-    HoldId: { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 100 } }
   schemas:
-    HoldRequest:
+    Problem:
       type: object
-      required: [eventId, seatIds]
-      properties: { eventId: { type: string }, seatIds: { type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: { type: string } } }
+      properties: { code: { type: string }, message: { type: string }, status: { type: integer } }
+    Seat:
+      type: object
+      properties: { id: { type: string }, index: { type: integer }, section: { type: string }, row: { type: string }, number: { type: integer }, priceCents: { type: integer } }
+    Hold:
+      type: object
+      properties: { id: { type: string }, eventId: { type: string }, status: { type: string }, expiresAt: { type: string, format: date-time }, seats: { type: array, items: { $ref: "#/components/schemas/Seat" } }, totalCents: { type: integer } }
+    Queue:
+      type: object
+      properties: { ticket: { type: integer }, sig: { type: string }, position: { type: integer }, admitted: { type: boolean }, admitAt: { type: string, format: date-time }, pass: { type: string } }
+paths:
+  /sessions/demo:
+    post: { summary: Create or restore a demo session cookie, responses: { "200": { description: Session } } }
+  /events/{eventId}/layout:
+    get: { summary: Venue geometry (sections and rows in bitmap order), responses: { "200": { description: Layout } } }
+  /events/{eventId}/seats:
+    get: { summary: "One character per seat: 0 open, 1 held, 2 sold", responses: { "200": { description: States } } }
+  /events/{eventId}/queue:
+    post: { summary: Join the waiting room, responses: { "201": { description: Ticket, content: { application/json: { schema: { $ref: "#/components/schemas/Queue" } } } } } }
+  /events/{eventId}/queue/{ticket}:
+    get:
+      summary: Ticket status; long-polls up to `wait` seconds until admission
+      parameters:
+        - { name: sig, in: query, required: true, schema: { type: string } }
+        - { name: wait, in: query, schema: { type: integer, maximum: 10 } }
+      responses: { "200": { description: Status with an admission pass once admitted } }
+  /holds:
+    post:
+      summary: Hold the best available contiguous block, or specific seats
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - { name: X-Admission-Token, in: header, schema: { type: string }, description: Required when the event has a waiting room }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId]
+              properties:
+                eventId: { type: string }
+                quantity: { type: integer, minimum: 1, maximum: 8 }
+                tier: { type: integer, description: 0 or omitted means any tier }
+                seatIds: { type: array, items: { type: string }, description: Request exact seats instead of best available }
+      responses:
+        "201": { description: Hold created, content: { application/json: { schema: { $ref: "#/components/schemas/Hold" } } } }
+        "200": { description: Idempotent replay of an earlier hold }
+        "403": { description: admission_required }
+        "409": { description: "seat_unavailable, sold_out, or hold_limit", content: { application/json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "423": { description: sale_closed }
+        "503": { description: "redis_unavailable, inventory_rebuilding, or timeout — retry with the same key" }
+  /holds/{holdId}:
+    get: { summary: Read an owned hold, responses: { "200": { description: Hold }, "410": { description: Expired } } }
+    delete: { summary: Release an owned hold, responses: { "204": { description: Released } } }
+  /holds/{holdId}/checkout:
+    post:
+      summary: Idempotent simulated checkout
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses: { "200": { description: Order }, "410": { description: Hold expired }, "402": { description: Payment declined (key decline-demo) } }
+  /orders/{orderId}:
+    get: { summary: Read an owned order, responses: { "200": { description: Order } } }
+  /control/options:
+    get: { summary: Venue presets, defaults, and available faults, responses: { "200": { description: Options } } }
+  /control/simulations:
+    get: { summary: Recent runs with metrics and invariants, responses: { "200": { description: Runs } } }
+    post:
+      summary: Queue a simulated on-sale
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: { enum: [safe, naive] }
+                preset: { enum: [club, arena] }
+                buyers: { type: integer, minimum: 10, maximum: 20000 }
+                arrivalSeconds: { type: integer, minimum: 1, maximum: 300 }
+                admitRate: { type: integer, minimum: 0, maximum: 5000 }
+                holdTtlSeconds: { type: integer, minimum: 3, maximum: 600 }
+      responses: { "202": { description: Queued }, "409": { description: Another run is active } }
+  /control/simulations/{id}:
+    get: { summary: One run, responses: { "200": { description: Run } } }
+  /control/simulations/{id}/timeline:
+    get: { summary: Gzip-encoded seat-by-seat replay, responses: { "200": { description: Timeline } } }
+  /control/stream:
+    get: { summary: "Server-sent events: snapshot on connect, then a frame every 100 ms", responses: { "200": { description: text/event-stream } } }
+  /control/chaos/{action}:
+    post:
+      summary: Inject a fault during a live sale
+      parameters: [{ name: action, in: path, required: true, schema: { enum: [redis-outage, redis-wipe, postgres-slow, api-crash] } }]
+      responses: { "202": { description: Fault started }, "409": { description: No live sale, or fault already active } }

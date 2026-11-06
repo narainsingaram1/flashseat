@@ -1,2 +1,0 @@
-import exec from "k6/execution";import { check } from "k6";import { session,availableSeats,hold } from "../common.js";
-export const options={vus:20,iterations:20};export default function(){const c=session(),s=availableSeats(c);if(!s.length)return;const k=`replay-${exec.vu.idInTest}-${exec.scenario.iterationInTest}`,a=hold(c,[s[0].id],k),b=hold(c,[s[0].id],k);check(b,{"same hold returned":r=>a.status===201&&r.status===200&&r.json("id")===a.json("id")});}

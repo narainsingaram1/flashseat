@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env: { POSTGRES_DB: flashseat, POSTGRES_USER: flashseat, POSTGRES_PASSWORD: flashseat }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U flashseat" --health-interval 2s --health-retries 30
+      redis:
+        image: redis:8.2.0-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+    env:
+      DATABASE_URL: postgres://flashseat:flashseat@localhost:5432/flashseat?sslmode=disable
+      REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26.1", cache-dependency-path: apps/api/go.sum }
+      - name: Apply migrations
+        run: for f in infra/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; done
+      - name: Vet
+        run: cd apps/api && go vet ./... && go vet -tags integration ./...
+      - name: Unit tests
+        run: cd apps/api && go test -race ./... && cd ../loadgen && go test ./...
+      - name: Concurrency integration tests (PostgreSQL + Redis)
+        run: cd apps/api && go test -race -count=2 -tags integration ./internal/store/ ./internal/inventory/
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24.5.0", cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build every service image
+        run: docker compose build

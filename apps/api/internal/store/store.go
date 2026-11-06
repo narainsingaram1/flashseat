@@ -1,3 +1,6 @@
+// Package store is the PostgreSQL authority. Reservation writes go through
+// PL/pgSQL functions (infra/migrations/007_onsale_engine.sql) so each hold,
+// checkout, or release is one network round trip.
 package store
 
 import (
@@ -6,25 +9,27 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/flashseat/flashseat/apps/api/internal/inventory"
 	"github.com/flashseat/flashseat/apps/api/internal/reservation"
-	"github.com/google/uuid"
+	"github.com/flashseat/flashseat/apps/api/internal/venue"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Event struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Venue       string    `json:"venue"`
-	SaleStatus  string    `json:"saleStatus"`
-	AccentColor string    `json:"accentColor"`
-	StartsAt    time.Time `json:"startsAt"`
-}
 type Store struct{ Pool *pgxpool.Pool }
 
-func Open(ctx context.Context, url string) (*Store, error) {
-	p, err := pgxpool.New(ctx, url)
+func Open(ctx context.Context, url string, maxConns int32) (*Store, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+		cfg.MinConns = min(maxConns, 4)
+	}
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -34,364 +39,319 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	}
 	return &Store{Pool: p}, nil
 }
+
 func (s *Store) Close() { s.Pool.Close() }
-func (s *Store) Events(ctx context.Context) ([]Event, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT id,name,venue,starts_at,sale_status,accent_color FROM events ORDER BY starts_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Event
-	for rows.Next() {
-		var e Event
-		if err := rows.Scan(&e.ID, &e.Name, &e.Venue, &e.StartsAt, &e.SaleStatus, &e.AccentColor); err != nil {
-			return nil, err
+
+// mapErr turns the reservation functions' SQLSTATEs into domain errors.
+func mapErr(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return reservation.ErrNotFound
 		}
-		out = append(out, e)
+		return err
 	}
-	return out, rows.Err()
-}
-func (s *Store) Event(ctx context.Context, id string) (Event, error) {
-	var e Event
-	err := s.Pool.QueryRow(ctx, `SELECT id,name,venue,starts_at,sale_status,accent_color FROM events WHERE id=$1`, id).Scan(&e.ID, &e.Name, &e.Venue, &e.StartsAt, &e.SaleStatus, &e.AccentColor)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return e, reservation.ErrNotFound
+	switch pgErr.Code {
+	case "FS404":
+		return reservation.ErrNotFound
+	case "FS403":
+		return reservation.ErrForbidden
+	case "FS409":
+		return reservation.ErrConflict
+	case "FS410":
+		return reservation.ErrExpired
+	case "FS422":
+		return reservation.ErrInvalidSeats
+	case "FS423":
+		return reservation.ErrSaleClosed
+	case "FS429":
+		return reservation.ErrHoldLimit
+	case "FS402":
+		return reservation.ErrPaymentDeclined
+	case "23505":
+		switch pgErr.ConstraintName {
+		case "one_active_hold_per_user":
+			return reservation.ErrHoldLimit
+		case "holds_user_id_idempotency_key_key", "orders_user_id_idempotency_key_key":
+			return ErrReplayRace
+		}
+		return reservation.ErrConflict
 	}
-	return e, err
+	return err
 }
 
-func (s *Store) Seats(ctx context.Context, eventID, userID string) ([]reservation.Seat, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT s.id,sec.name,s.row_label,s.seat_number,s.price_cents,s.accessible,
-	CASE WHEN oi.seat_id IS NOT NULL THEN 'sold' WHEN h.status='active' AND h.expires_at>now() THEN 'held' ELSE 'available' END,
-	COALESCE(h.user_id::text=$2,false)
-	FROM seats s JOIN sections sec ON sec.id=s.section_id
-	LEFT JOIN order_items oi ON oi.seat_id=s.id
-	LEFT JOIN hold_items hi ON hi.seat_id=s.id AND hi.released_at IS NULL
-	LEFT JOIN holds h ON h.id=hi.hold_id
-	WHERE s.event_id=$1 ORDER BY sec.sort_order,s.row_label,s.seat_number`, eventID, userID)
+// ErrReplayRace means a concurrent request with the same idempotency key won;
+// retrying the call returns its result.
+var ErrReplayRace = errors.New("concurrent request with the same idempotency key")
+
+// EventMeta is the per-event configuration every request needs.
+type EventMeta struct {
+	ID, Name, Venue, SaleStatus, Mode string
+	StartsAt                          time.Time
+	HoldTTL                           time.Duration
+	QueueRate                         int
+	QueueOpenedAt                     *time.Time
+	QueueBase                         int64
+	Version                           int64
+}
+
+const metaColumns = `id,name,venue,starts_at,sale_status,allocation_mode,hold_ttl_seconds,queue_rate,queue_opened_at,queue_base,inventory_version`
+
+func scanMeta(row pgx.Row) (EventMeta, error) {
+	var m EventMeta
+	var ttl int
+	err := row.Scan(&m.ID, &m.Name, &m.Venue, &m.StartsAt, &m.SaleStatus, &m.Mode, &ttl, &m.QueueRate, &m.QueueOpenedAt, &m.QueueBase, &m.Version)
+	m.HoldTTL = time.Duration(ttl) * time.Second
+	return m, err
+}
+
+func (s *Store) EventMeta(ctx context.Context, id string) (EventMeta, error) {
+	m, err := scanMeta(s.Pool.QueryRow(ctx, `SELECT `+metaColumns+` FROM events WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return m, reservation.ErrNotFound
+	}
+	return m, err
+}
+
+func (s *Store) Events(ctx context.Context) ([]EventMeta, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT `+metaColumns+` FROM events ORDER BY starts_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []reservation.Seat
+	var out []EventMeta
 	for rows.Next() {
-		var v reservation.Seat
-		if err := rows.Scan(&v.ID, &v.Section, &v.Row, &v.Number, &v.PriceCents, &v.Accessible, &v.State, &v.Mine); err != nil {
+		m, err := scanMeta(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, v)
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
-func (s *Store) HoldByKey(ctx context.Context, userID, key string) (reservation.Hold, error) {
-	var id string
-	err := s.Pool.QueryRow(ctx, `SELECT id FROM holds WHERE user_id=$1 AND idempotency_key=$2`, userID, key).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return reservation.Hold{}, reservation.ErrNotFound
-	}
+
+// Layout loads an event's seats in bitmap order.
+func (s *Store) Layout(ctx context.Context, eventID string) ([]venue.LayoutSeat, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT s.id,s.seat_index,sec.name,s.row_label,s.seat_number,s.price_cents,sec.id,sec.tier,s.row_index,sec.grid_x,sec.grid_y
+		FROM seats s JOIN sections sec ON sec.id=s.section_id WHERE s.event_id=$1 ORDER BY s.seat_index`, eventID)
 	if err != nil {
-		return reservation.Hold{}, err
+		return nil, err
 	}
-	return s.Hold(ctx, id, userID)
-}
-func (s *Store) CreateHold(ctx context.Context, eventID, userID, key, token string, seatIDs []string, ttl time.Duration) (reservation.Hold, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	defer tx.Rollback(ctx)
-	var open bool
-	err = tx.QueryRow(ctx, `SELECT sale_status='open' FROM events WHERE id=$1`, eventID).Scan(&open)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return reservation.Hold{}, reservation.ErrNotFound
-	}
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	if !open {
-		return reservation.Hold{}, fmt.Errorf("sale is not open")
-	}
-	rows, err := tx.Query(ctx, `SELECT id,section_id,row_label,seat_number,price_cents,accessible FROM seats WHERE event_id=$1 AND id=ANY($2) ORDER BY id FOR UPDATE`, eventID, seatIDs)
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	var seats []reservation.Seat
+	defer rows.Close()
+	var out []venue.LayoutSeat
 	for rows.Next() {
-		var v reservation.Seat
-		if err = rows.Scan(&v.ID, &v.Section, &v.Row, &v.Number, &v.PriceCents, &v.Accessible); err != nil {
-			rows.Close()
-			return reservation.Hold{}, err
+		var l venue.LayoutSeat
+		if err := rows.Scan(&l.ID, &l.Index, &l.Section, &l.Row, &l.Number, &l.PriceCents, &l.SectionID, &l.Tier, &l.RowIndex, &l.GridX, &l.GridY); err != nil {
+			return nil, err
 		}
-		seats = append(seats, v)
+		out = append(out, l)
 	}
-	rows.Close()
-	if len(seats) != len(seatIDs) {
-		return reservation.Hold{}, fmt.Errorf("unknown seat in request")
-	}
-	var conflicts int
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM unnest($1::text[]) x(id) WHERE EXISTS(SELECT 1 FROM order_items WHERE seat_id=x.id) OR EXISTS(SELECT 1 FROM hold_items hi JOIN holds h ON h.id=hi.hold_id WHERE hi.seat_id=x.id AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now())`, seatIDs).Scan(&conflicts)
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	if conflicts > 0 {
-		return reservation.Hold{}, reservation.ErrConflict
-	}
-	expires := time.Now().UTC().Add(ttl)
-	var holdID string
-	err = tx.QueryRow(ctx, `INSERT INTO holds(event_id,user_id,status,expires_at,idempotency_key,redis_token) VALUES($1,$2,'active',$3,$4,$5) RETURNING id`, eventID, userID, expires, key, token).Scan(&holdID)
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	total := 0
-	for _, seat := range seats {
-		_, err = tx.Exec(ctx, `INSERT INTO hold_items(hold_id,seat_id,price_cents) VALUES($1,$2,$3)`, holdID, seat.ID, seat.PriceCents)
-		if err != nil {
-			if pgErr := new(pgconn.PgError); errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return reservation.Hold{}, reservation.ErrConflict
-			}
-			return reservation.Hold{}, err
-		}
-		total += seat.PriceCents
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,user_id,event_type,metadata) VALUES($1,$2,$3,'hold.created',jsonb_build_object('seat_count',$4::int))`, eventID, holdID, userID, len(seats))
-	if err != nil {
-		return reservation.Hold{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return reservation.Hold{}, err
-	}
-	return reservation.Hold{ID: holdID, EventID: eventID, UserID: userID, Status: "active", ExpiresAt: expires, Seats: seats, TotalCents: total}, nil
+	return out, rows.Err()
 }
-func (s *Store) Hold(ctx context.Context, id, userID string) (reservation.Hold, error) {
-	var h reservation.Hold
-	h.ID = id
-	err := s.Pool.QueryRow(ctx, `SELECT event_id,user_id,status,expires_at FROM holds WHERE id=$1`, id).Scan(&h.EventID, &h.UserID, &h.Status, &h.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return h, reservation.ErrNotFound
-	}
+
+// TakenIndexes returns seats that are sold or under a live hold.
+func (s *Store) TakenIndexes(ctx context.Context, eventID string) (sold, held []int, err error) {
+	rows, err := s.Pool.Query(ctx, `SELECT s.seat_index, true FROM order_items oi JOIN seats s ON s.id=oi.seat_id WHERE s.event_id=$1
+		UNION ALL
+		SELECT s.seat_index, false FROM hold_items hi JOIN holds h ON h.id=hi.hold_id JOIN seats s ON s.id=hi.seat_id
+		 WHERE h.event_id=$1 AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now()`, eventID)
 	if err != nil {
-		return h, err
-	}
-	if h.UserID != userID {
-		return h, reservation.ErrForbidden
-	}
-	rows, err := s.Pool.Query(ctx, `SELECT s.id,sec.name,s.row_label,s.seat_number,hi.price_cents,s.accessible FROM hold_items hi JOIN seats s ON s.id=hi.seat_id JOIN sections sec ON sec.id=s.section_id WHERE hi.hold_id=$1 ORDER BY s.id`, id)
-	if err != nil {
-		return h, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var v reservation.Seat
-		if err = rows.Scan(&v.ID, &v.Section, &v.Row, &v.Number, &v.PriceCents, &v.Accessible); err != nil {
-			return h, err
+		var i int
+		var isSold bool
+		if err = rows.Scan(&i, &isSold); err != nil {
+			return nil, nil, err
 		}
-		v.State = "held"
-		v.Mine = true
-		h.Seats = append(h.Seats, v)
-		h.TotalCents += v.PriceCents
+		if isSold {
+			sold = append(sold, i)
+		} else {
+			held = append(held, i)
+		}
 	}
-	return h, rows.Err()
+	return sold, held, rows.Err()
 }
-func (s *Store) Release(ctx context.Context, id, userID, status string) (eventID, token string, seatIDs []string, err error) {
-	tx, e := s.Pool.Begin(ctx)
-	if e != nil {
-		err = e
-		return
+
+// InventorySnapshot is PostgreSQL's view used to (re)build the Redis bitmap.
+func (s *Store) InventorySnapshot(ctx context.Context, eventID string) (inventory.Snapshot, error) {
+	var snap inventory.Snapshot
+	sold, _, err := s.TakenIndexes(ctx, eventID)
+	if err != nil {
+		return snap, err
 	}
-	defer tx.Rollback(ctx)
-	var owner, current string
-	var expires time.Time
-	e = tx.QueryRow(ctx, `SELECT event_id,user_id::text,status,expires_at,redis_token::text FROM holds WHERE id=$1 FOR UPDATE`, id).Scan(&eventID, &owner, &current, &expires, &token)
-	if errors.Is(e, pgx.ErrNoRows) {
-		err = reservation.ErrNotFound
-		return
+	snap.Sold = sold
+	rows, err := s.Pool.Query(ctx, `SELECT h.redis_token::text, h.expires_at, array_agg(s.seat_index ORDER BY s.seat_index)
+		FROM holds h JOIN hold_items hi ON hi.hold_id=h.id AND hi.released_at IS NULL JOIN seats s ON s.id=hi.seat_id
+		WHERE h.event_id=$1 AND h.status='active' AND h.expires_at>now() GROUP BY h.id`, eventID)
+	if err != nil {
+		return snap, err
 	}
-	if e != nil {
-		err = e
-		return
+	defer rows.Close()
+	for rows.Next() {
+		var c inventory.LiveClaim
+		var idx []int32
+		if err = rows.Scan(&c.Token, &c.ExpiresAt, &idx); err != nil {
+			return snap, err
+		}
+		c.Indexes = ints(idx)
+		snap.Claims = append(snap.Claims, c)
+	}
+	return snap, rows.Err()
+}
+
+func ints(v []int32) []int {
+	out := make([]int, len(v))
+	for i, x := range v {
+		out[i] = int(x)
+	}
+	return out
+}
+
+// HoldResult is what fs_create_hold returns.
+type HoldResult struct {
+	ID        string
+	Replayed  bool
+	ExpiresAt time.Time
+	Indexes   []int
+}
+
+func (s *Store) CreateHold(ctx context.Context, eventID, userID, key, token string, indexes []int, actor string) (HoldResult, error) {
+	var r HoldResult
+	var idx []int32
+	err := s.Pool.QueryRow(ctx, `SELECT o_hold::text,o_replayed,o_expires,o_indexes FROM fs_create_hold($1,$2,$3,$4,$5,$6)`,
+		eventID, userID, key, token, indexes, actor).Scan(&r.ID, &r.Replayed, &r.ExpiresAt, &idx)
+	r.Indexes = ints(idx)
+	return r, mapErr(err)
+}
+
+// CheckoutResult is what fs_checkout returns.
+type CheckoutResult struct {
+	OrderID, Reference, EventID, Token string
+	TotalCents                         int
+	CreatedAt                          time.Time
+	Replayed                           bool
+	Indexes                            []int
+}
+
+func (s *Store) Checkout(ctx context.Context, holdID, userID, key, actor string) (CheckoutResult, error) {
+	var r CheckoutResult
+	var idx []int32
+	err := s.Pool.QueryRow(ctx, `SELECT o_order::text,o_reference,o_total,o_created,o_replayed,o_event,o_token::text,o_indexes FROM fs_checkout($1,$2,$3,$4)`,
+		holdID, userID, key, actor).Scan(&r.OrderID, &r.Reference, &r.TotalCents, &r.CreatedAt, &r.Replayed, &r.EventID, &r.Token, &idx)
+	r.Indexes = ints(idx)
+	return r, mapErr(err)
+}
+
+// Release returns the event, token, and seats of a buyer-released hold.
+func (s *Store) Release(ctx context.Context, holdID, userID, actor string) (string, string, []int, error) {
+	var event, token string
+	var idx []int32
+	err := s.Pool.QueryRow(ctx, `SELECT o_event,o_token::text,o_indexes FROM fs_release($1,$2,$3)`, holdID, userID, actor).Scan(&event, &token, &idx)
+	return event, token, ints(idx), mapErr(err)
+}
+
+// HoldView is a stored hold with its seats as bitmap indexes.
+type HoldView struct {
+	ID, EventID, Status string
+	ExpiresAt           time.Time
+	Indexes             []int
+}
+
+func (s *Store) Hold(ctx context.Context, id, userID string) (HoldView, error) {
+	var h HoldView
+	var owner string
+	var idx []int32
+	err := s.Pool.QueryRow(ctx, `SELECT h.id::text,h.event_id,h.status,h.expires_at,h.user_id::text,
+		coalesce((SELECT array_agg(s.seat_index ORDER BY s.seat_index) FROM hold_items hi JOIN seats s ON s.id=hi.seat_id WHERE hi.hold_id=h.id),'{}')
+		FROM holds h WHERE h.id=$1`, id).Scan(&h.ID, &h.EventID, &h.Status, &h.ExpiresAt, &owner, &idx)
+	if err != nil {
+		return h, mapErr(err)
 	}
 	if owner != userID {
-		err = reservation.ErrForbidden
-		return
+		return h, reservation.ErrForbidden
 	}
-	if current != "active" {
-		err = reservation.ErrConflict
-		return
-	}
-	rows, e := tx.Query(ctx, `UPDATE hold_items SET released_at=now() WHERE hold_id=$1 AND released_at IS NULL RETURNING seat_id`, id)
-	if e != nil {
-		err = e
-		return
-	}
-	for rows.Next() {
-		var seat string
-		_ = rows.Scan(&seat)
-		seatIDs = append(seatIDs, seat)
-	}
-	rows.Close()
-	_, e = tx.Exec(ctx, `UPDATE holds SET status=$2,updated_at=now() WHERE id=$1`, id, status)
-	if e == nil {
-		_, e = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,user_id,event_type) VALUES($1,$2,$3,$4)`, eventID, id, userID, "hold."+status)
-	}
-	if e != nil {
-		err = e
-		return
-	}
-	err = tx.Commit(ctx)
-	return
+	h.Indexes = ints(idx)
+	return h, nil
 }
-func (s *Store) Checkout(ctx context.Context, holdID, userID, key string) (reservation.Order, string, []string, error) {
-	tx, err := s.Pool.Begin(ctx)
+
+// OrderView is a stored order.
+type OrderView struct {
+	ID, Reference, HoldID, EventID string
+	TotalCents                     int
+	CreatedAt                      time.Time
+	Indexes                        []int
+}
+
+func (s *Store) Order(ctx context.Context, id, userID string) (OrderView, error) {
+	var o OrderView
+	var owner string
+	var idx []int32
+	err := s.Pool.QueryRow(ctx, `SELECT o.id::text,o.reference,o.hold_id::text,h.event_id,o.total_cents,o.created_at,o.user_id::text,
+		coalesce((SELECT array_agg(s.seat_index ORDER BY s.seat_index) FROM order_items oi JOIN seats s ON s.id=oi.seat_id WHERE oi.order_id=o.id),'{}')
+		FROM orders o JOIN holds h ON h.id=o.hold_id WHERE o.id=$1`, id).Scan(&o.ID, &o.Reference, &o.HoldID, &o.EventID, &o.TotalCents, &o.CreatedAt, &owner, &idx)
 	if err != nil {
-		return reservation.Order{}, "", nil, err
-	}
-	defer tx.Rollback(ctx)
-	var o reservation.Order
-	err = tx.QueryRow(ctx, `SELECT id,reference,hold_id,user_id,total_cents,created_at FROM orders WHERE user_id=$1 AND idempotency_key=$2`, userID, key).Scan(&o.ID, &o.Reference, &o.HoldID, &o.UserID, &o.TotalCents, &o.CreatedAt)
-	if err == nil {
-		return o, "", nil, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return o, "", nil, err
-	}
-	var eventID, owner, status, token string
-	var expires time.Time
-	err = tx.QueryRow(ctx, `SELECT event_id,user_id::text,status,expires_at,redis_token::text FROM holds WHERE id=$1 FOR UPDATE`, holdID).Scan(&eventID, &owner, &status, &expires, &token)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return o, "", nil, reservation.ErrNotFound
-	}
-	if err != nil {
-		return o, "", nil, err
+		return o, mapErr(err)
 	}
 	if owner != userID {
-		return o, "", nil, reservation.ErrForbidden
-	}
-	if status != "active" {
-		replayErr := tx.QueryRow(ctx, `SELECT id,reference,hold_id,user_id,total_cents,created_at FROM orders WHERE hold_id=$1 AND user_id=$2 AND idempotency_key=$3`, holdID, userID, key).Scan(&o.ID, &o.Reference, &o.HoldID, &o.UserID, &o.TotalCents, &o.CreatedAt)
-		if replayErr == nil {
-			return o, "", nil, nil
-		}
-		return o, "", nil, reservation.ErrConflict
-	}
-	if reservation.IsExpired(expires, time.Now()) {
-		return o, "", nil, reservation.ErrExpired
-	}
-	if !reservation.PaymentApproved(key) {
-		return o, "", nil, fmt.Errorf("simulated payment declined")
-	}
-	rows, err := tx.Query(ctx, `SELECT s.id,sec.name,s.row_label,s.seat_number,hi.price_cents,s.accessible FROM hold_items hi JOIN seats s ON s.id=hi.seat_id JOIN sections sec ON sec.id=s.section_id WHERE hi.hold_id=$1 AND hi.released_at IS NULL ORDER BY s.id`, holdID)
-	if err != nil {
-		return o, "", nil, err
-	}
-	for rows.Next() {
-		var v reservation.Seat
-		if err = rows.Scan(&v.ID, &v.Section, &v.Row, &v.Number, &v.PriceCents, &v.Accessible); err != nil {
-			rows.Close()
-			return o, "", nil, err
-		}
-		o.Seats = append(o.Seats, v)
-		o.TotalCents += v.PriceCents
-	}
-	rows.Close()
-	o.ID = uuid.NewString()
-	o.Reference = "FS-" + time.Now().UTC().Format("060102") + "-" + o.ID[:6]
-	o.HoldID = holdID
-	o.UserID = userID
-	o.CreatedAt = time.Now().UTC()
-	_, err = tx.Exec(ctx, `INSERT INTO orders(id,reference,hold_id,user_id,idempotency_key,total_cents,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, o.ID, o.Reference, holdID, userID, key, o.TotalCents, o.CreatedAt)
-	if err != nil {
-		return o, "", nil, err
-	}
-	ids := make([]string, 0, len(o.Seats))
-	for _, v := range o.Seats {
-		ids = append(ids, v.ID)
-		_, err = tx.Exec(ctx, `INSERT INTO order_items(order_id,seat_id,section_name,row_label,seat_number,price_cents) VALUES($1,$2,$3,$4,$5,$6)`, o.ID, v.ID, v.Section, v.Row, v.Number, v.PriceCents)
-		if err != nil {
-			return o, "", nil, err
-		}
-	}
-	_, err = tx.Exec(ctx, `UPDATE hold_items SET released_at=now() WHERE hold_id=$1`, holdID)
-	if err != nil {
-		return o, "", nil, err
-	}
-	_, err = tx.Exec(ctx, `UPDATE holds SET status='purchased',updated_at=now() WHERE id=$1`, holdID)
-	if err != nil {
-		return o, "", nil, err
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,order_id,user_id,event_type) VALUES($1,$2,$3,$4,'order.created')`, eventID, holdID, o.ID, userID)
-	if err != nil {
-		return o, "", nil, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return o, "", nil, err
-	}
-	return o, token, ids, nil
-}
-func (s *Store) Order(ctx context.Context, id, userID string) (reservation.Order, error) {
-	var o reservation.Order
-	err := s.Pool.QueryRow(ctx, `SELECT id,reference,hold_id,user_id,total_cents,created_at FROM orders WHERE id=$1`, id).Scan(&o.ID, &o.Reference, &o.HoldID, &o.UserID, &o.TotalCents, &o.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return o, reservation.ErrNotFound
-	}
-	if err != nil {
-		return o, err
-	}
-	if o.UserID != userID {
 		return o, reservation.ErrForbidden
 	}
+	o.Indexes = ints(idx)
 	return o, nil
 }
-func (s *Store) ActiveClaims(ctx context.Context, seatID string) (int, error) {
-	var count int
-	err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM hold_items hi JOIN holds h ON h.id=hi.hold_id WHERE hi.seat_id=$1 AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now()`, seatID).Scan(&count)
-	return count, err
+
+// NextTicket issues a waiting-room ticket number.
+func (s *Store) NextTicket(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.Pool.QueryRow(ctx, `SELECT nextval('queue_ticket_seq')`).Scan(&n)
+	return n, err
 }
-func (s *Store) ExpireBatch(ctx context.Context, limit int) ([][3]any, error) {
-	tx, err := s.Pool.Begin(ctx)
+
+// ExpiredClaim is one hold released by the sweeper.
+type ExpiredClaim struct {
+	EventID, Token string
+	Indexes        []int
+}
+
+// ExpireDue expires up to limit past-due holds. Safe to run from any number
+// of processes: rows are claimed with FOR UPDATE SKIP LOCKED.
+func (s *Store) ExpireDue(ctx context.Context, limit int) ([]ExpiredClaim, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT o_event,o_token::text,o_indexes FROM fs_expire_due($1)`, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id,event_id,user_id::text,redis_token::text FROM holds WHERE status='active' AND expires_at<=now() ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
-	if err != nil {
-		return nil, err
-	}
-	type rec struct{ id, event, user, token string }
-	var rs []rec
+	defer rows.Close()
+	var out []ExpiredClaim
 	for rows.Next() {
-		var r rec
-		if err = rows.Scan(&r.id, &r.event, &r.user, &r.token); err != nil {
-			rows.Close()
+		var c ExpiredClaim
+		var idx []int32
+		if err = rows.Scan(&c.EventID, &c.Token, &idx); err != nil {
 			return nil, err
 		}
-		rs = append(rs, r)
+		c.Indexes = ints(idx)
+		out = append(out, c)
 	}
-	rows.Close()
-	var out [][3]any
-	for _, r := range rs {
-		seatRows, e := tx.Query(ctx, `UPDATE hold_items SET released_at=now() WHERE hold_id=$1 AND released_at IS NULL RETURNING seat_id`, r.id)
-		if e != nil {
-			return nil, e
+	return out, rows.Err()
+}
+
+func (s *Store) String() string { return fmt.Sprintf("store(%d conns)", s.Pool.Stat().TotalConns()) }
+
+// OpenWithRetry keeps trying to connect until ctx ends, so a service that
+// starts before its database (or the proxy in front of it) does not exit.
+func OpenWithRetry(ctx context.Context, url string, maxConns int32, log func(error)) (*Store, error) {
+	delay := 250 * time.Millisecond
+	for {
+		s, err := Open(ctx, url, maxConns)
+		if err == nil {
+			return s, nil
 		}
-		var ids []string
-		for seatRows.Next() {
-			var id string
-			_ = seatRows.Scan(&id)
-			ids = append(ids, id)
+		log(err)
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(delay):
 		}
-		seatRows.Close()
-		_, e = tx.Exec(ctx, `UPDATE holds SET status='expired',updated_at=now() WHERE id=$1`, r.id)
-		if e != nil {
-			return nil, e
-		}
-		_, e = tx.Exec(ctx, `INSERT INTO reservation_events(event_id,hold_id,user_id,event_type) VALUES($1,$2,$3,'hold.expired')`, r.event, r.id, r.user)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, [3]any{r.event, ids, r.token})
+		delay = min(delay*2, 3*time.Second)
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return out, nil
 }

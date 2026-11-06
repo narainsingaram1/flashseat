@@ -1,151 +1,96 @@
 # FlashSeat
 
-**A high-concurrency assigned-seat reservation engine built for the exact moment everyone clicks “buy.”**
+**A ticket on-sale you can watch, and break.** Thousands of real HTTP buyers queue, grab the best seats they can, lose races, pay, or walk away, while a Go reservation engine keeps every seat sold exactly once. A live seat map, drawn straight from PostgreSQL's change feed, shows every seat as it is held, sold, or released.
 
-FlashSeat is a portfolio-grade HTTP concurrency lab with a focused Next.js control surface and a Go reservation engine backed by PostgreSQL and Redis. A separate K6 container creates real sessions, synchronizes independent HTTP buyers, calls the public hold endpoint, and stores latency, throughput, and database correctness evidence.
+Inject a real fault mid-sale (cut Redis, wipe Redis, slow PostgreSQL, kill an API replica) and watch the correctness checks stay at zero. Then run the same crowd against a naive engine and watch seats get sold twice.
 
-> Performance numbers in this repository are targets until a benchmark run is recorded in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Correctness claims are enforced by the database design and test scenarios; they are not fabricated throughput claims.
+## Measured results
 
-## What works
+Same machine, same crowd: a 9,000-seat arena, 6,000 k6 buyers arriving over 15 seconds, no waiting room, 10-second holds. Apple M4, 16 GB, everything (k6 included) in Docker Desktop.
 
-- Run a real external HTTP contention benchmark directly from the home page.
-- Start with 100, 500, or 1,000 synchronized clients; use the advanced control for up to 10,000 when hardware permits.
-- See measured K6 request rate, P50/P95/P99 latency, HTTP 201/409 outcomes, and PostgreSQL claim counts.
-- Watch an honest live request arena driven by job-scoped API response counters, with compressed buyer packets, exact progress, and browser-sampled response bursts.
-- Save every benchmark job and raw summary in PostgreSQL and showcase aggregate evidence on a dedicated results page.
-- Run multiple API and worker replicas without double-transitioning a hold.
-- Observe Prometheus HTTP request, conflict, and latency metrics.
-- Exercise contention, journey, expiration, replay, soak, and 10K-VU spike profiles with K6.
+| | FlashSeat engine | Naive baseline |
+|---|---:|---:|
+| Seats sold (distinct, from PostgreSQL) | 8,581 (95.3%) | 4,182 |
+| Tickets buyers were charged for (k6) | 8,581 | 10,659 |
+| **Seats sold to more than one buyer** | **0** | **2,131** |
+| Seats resold after a hold expired | 1,456 | 1,256 |
+| Orders committed but never confirmed to a buyer | 0 | 0 |
 
-## Quick start
+With all four faults injected during one FlashSeat sale (API replica killed, Redis cut for 6 s, PostgreSQL slowed by 80 ms, Redis wiped), there were still 0 double-sales and 0 Redis/PostgreSQL drift after recovery. During the Redis cut, 3,843 hold requests failed closed with `503` instead of writing without protection. After the wipe, holds returned `503 inventory_rebuilding` until the bitmap was restored from PostgreSQL.
 
-Prerequisite: Docker Desktop with Compose. K6 is already pinned inside the dedicated load-generator image; no host installation is required.
+Details, including where latency goes and what is not yet fixed, are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+
+## Run it
+
+Prerequisite: Docker Desktop with Compose. k6 runs inside the stack.
 
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
-Open:
+Open http://localhost:3000, choose a venue and engine, and open the sale. Recorded runs are at `/runs`, and `/compare` replays two runs side by side on one clock.
 
-- HTTP Contention Lab: http://localhost:3000
-- Results & Evidence: http://localhost:3000/results
-- API readiness: http://localhost:8080/health/ready
-- Prometheus metrics: http://localhost:8080/metrics
+`make reset` wipes the database, including recorded runs.
 
-For a fast expiration demonstration:
+## What happens during a sale
 
-```bash
-HOLD_TTL_SECONDS=10 docker compose up --build
+1. The control plane rebuilds the venue (1,170 or 9,000 seats), loads a fresh Redis seat bitmap, and opens the waiting room.
+2. k6 sends buyers at a steady arrival rate. Each buyer gets a session, takes a queue ticket, and long-polls until admitted.
+3. Admitted buyers ask for 1–4 seats together. About half want any tier; the rest want a specific price tier and settle for any tier if theirs sells out. The server picks the best contiguous block, and retries on its own if another buyer claims it first.
+4. Buyers think for 1–4 seconds, then 72% check out, 10% release their seats, and 18% walk away and let the hold expire. Expired seats go back on sale and are often resold.
+5. API replicas stream outcome counts and latency histograms to the control plane every 250 ms. The control plane tails PostgreSQL's change feed for seat changes and re-checks the invariants every second.
+6. When the sale settles, the run is saved with server metrics, the k6 client summary, the final invariant check, and a compressed seat-by-seat replay.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  K[k6 buyers] --> G[nginx gateway]
+  B[Browser] -->|HTTP + SSE| G
+  G --> A[API replicas ×2]
+  G -->|/control| C[Control plane]
+  A -->|Toxiproxy| R[(Redis bitmap)]
+  A -->|Toxiproxy| P[(PostgreSQL)]
+  A -.telemetry.-> C
+  C -->|tail change feed| P
+  C --> L[k6 loadgen]
 ```
 
-Observability profile:
+The hold path costs one Redis read, one atomic Lua claim, and one PostgreSQL function call:
+
+- **Redis bitmap + Lua.** One bit per seat. `claim.lua` claims a whole block all at once or not at all, tracks the claim's expiry, and frees abandoned seats by itself. Release is scoped to the claim's token.
+- **Best-available picker.** It ranks rows by tier, depth, and centrality, then picks among the top blocks with a bias toward the best, so concurrent buyers spread out instead of colliding on one block (≈0.7 µs on a half-full 9,000-seat arena).
+- **One round trip to PostgreSQL.** `fs_create_hold` handles idempotency replay, locks seat rows in index order (no deadlocks between overlapping multi-seat requests), expires lapsed holds inline, enforces one active hold per buyer, and inserts. Unique indexes are the last line of defense.
+- **Waiting room.** Admission is a pure function of time (`ticket ≤ (now − opened) × rate`), so replicas agree without coordinating. Tickets come from a PostgreSQL sequence and passes are HMAC-signed.
+- **Exact recovery.** If Redis loses its data, holds fail closed until the bitmap is rebuilt from PostgreSQL. The rebuild waits for in-flight transactions to finish, so the snapshot is exact.
+
+The full design, including why Redis always expires after PostgreSQL and how the change-feed cursor handles out-of-order commits, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The API contract is in [docs/openapi.yaml](docs/openapi.yaml).
+
+## Tests
 
 ```bash
-docker compose --profile observability up --build
+make test-go            # unit tests: picker, waiting room, board, feed cursor, telemetry
+make test-integration   # PostgreSQL + Redis: one winner per seat, no deadlocks, lazy expiry, idempotent checkout
+make test-web           # typecheck, lint, production build, rendered routes
 ```
 
-This adds Prometheus at port 9090 and Grafana at port 3001 (`admin` / `flashseat`).
-
-## Correctness design
-
-The critical path intentionally uses two layers with different responsibilities:
-
-1. An atomic Redis Lua script leases every requested seat key together. If one key is occupied, it writes nothing.
-2. PostgreSQL starts a transaction and locks seat rows in sorted ID order using `SELECT ... FOR UPDATE`.
-3. The transaction verifies sales and live holds, inserts the hold and immutable price snapshots, and records an audit event.
-4. Partial unique indexes prevent two unreleased hold items for one seat. A unique order-item constraint makes overselling impossible even if application logic regresses.
-5. Checkout locks the hold, verifies ownership and authoritative database time, creates exactly one order, and releases the Redis leases after commit.
-
-Redis TTL notifications are deliberately not a correctness dependency. A worker continuously claims overdue holds in bounded `FOR UPDATE SKIP LOCKED` batches, transitions them exactly once, and releases token-owned lease keys. See [the architecture notes](docs/ARCHITECTURE.md).
-
-## Interactive HTTP benchmark
-
-Open the home page, choose 100, 500, or 1,000 clients, and select **Run HTTP benchmark**. The control API creates a durable job. A separate non-root K6 container then creates one demo session per virtual user, waits at a shared time barrier, and sends every buyer through the real `POST /api/v1/holds` endpoint. After K6 finishes, the API queries PostgreSQL for active claims before releasing the test winner. The `/results` page excludes the older in-process smoke runs and displays only these external HTTP jobs.
-
-Only one benchmark may run at a time. The load generator accepts one hard-coded scenario and one allowlisted internal API target; it is not an open load-testing proxy.
-
-## API
-
-All product routes are under `/api/v1`:
-
-| Method | Route | Purpose |
-|---|---|---|
-| POST | `/sessions/demo` | Create or restore a demo-user cookie |
-| GET | `/events` | List events |
-| GET | `/events/{eventId}` | Event details |
-| GET | `/events/{eventId}/seats` | Availability snapshot and server time |
-| GET | `/events/{eventId}/stream` | SSE inventory invalidations |
-| POST | `/holds` | Atomic all-or-none hold |
-| GET / DELETE | `/holds/{holdId}` | Read or release an owned hold |
-| POST | `/holds/{holdId}/checkout` | Idempotent simulated checkout |
-| GET | `/orders/{orderId}` | Read an owned order |
-| POST | `/benchmarks` | Queue an allowlisted same-seat HTTP benchmark |
-| GET | `/benchmarks/{benchmarkId}` | Poll a durable benchmark job |
-| GET | `/benchmarks/{benchmarkId}/live` | Read exact in-flight hold response counters |
-| GET | `/benchmarks/results` | Aggregate and recent benchmark evidence |
-
-Mutating requests require `Idempotency-Key`. The browser demo uses an HTTP-only session cookie. Stable JSON errors use `code`, `message`, and `status`. The contract is in [docs/openapi.yaml](docs/openapi.yaml).
-
-## Testing
-
-```bash
-# Go unit tests
-cd apps/api && go test ./...
-
-# Database concurrency test (stack must be running)
-cd apps/api && go test -tags=integration ./internal/store
-
-# Web production build and rendered-route tests
-npm test
-
-# Atomic same-seat collision; exactly one winner threshold
-k6 run load-tests/scenarios/same-seat-contention.js
-
-# Realistic browse → hold → checkout flow
-k6 run load-tests/scenarios/journey.js
-
-# Hardware-intensive 10K virtual-user profile
-k6 run load-tests/scenarios/spike-10k.js
-```
-
-Other profiles are in `load-tests/scenarios`: hot section, expiration churn, idempotency replay, and soak. Configure `BASE_URL`, `VUS`, `DURATION`, or `SEAT_ID` through K6 environment variables.
+CI runs all three on every push, plus a build of every service image.
 
 ## Repository map
 
 ```text
-app/                  Next.js simulation and saved-results routes
-apps/api/             Go API, reconciliation worker, and tests
-apps/loadgen/         Allowlisted K6 orchestration service and HTTP scenario
-infra/migrations/     PostgreSQL schema, constraints, and seed event
-infra/redis/          Auditable Lua lock/release scripts
-infra/prometheus/     Metrics scrape configuration
-load-tests/           K6 workloads
-docs/                 Architecture, API contract, and benchmark record
+app/, components/, lib/   Next.js UI: live sale, run history, replay, compare
+apps/api/cmd/api          Data plane: sessions, waiting room, holds, checkout
+apps/api/cmd/control      Control plane: runner, change-feed hub, invariants, faults, expiry sweeper
+apps/api/internal/venue   Layouts and the best-available picker
+apps/api/internal/inventory  Redis bitmap and Lua scripts
+apps/loadgen              Allowlisted k6 runner and the buyer-journey scenario
+infra/migrations          Schema and the PL/pgSQL reservation functions
+infra/gateway             nginx load balancer
+infra/toxiproxy           Fault-injection proxies
 ```
 
-The web workspace stays at the repository root because it is also deployable as a Cloudflare-compatible Sites application. The service and infrastructure remain separated as monorepo workspaces.
+## Limits
 
-## Failure semantics
-
-- Competing request: `409 seat_unavailable`; no partial hold is created.
-- Invalid selection: `422 invalid_seats`.
-- Expired hold: `410 hold_expired`.
-- Redis unavailable during admission: fail closed; no database hold is attempted.
-- Missed Redis notification: reconciliation worker releases the database hold.
-- Duplicate idempotency key: return the original hold or order.
-- SSE disconnect: the UI keeps its last snapshot and refreshes via REST when reconnecting.
-
-## Honest resume framing
-
-Before benchmarking:
-
-> Built a horizontally safe seat-reservation MVP using Go, PostgreSQL row locks and constraints, Redis atomic Lua leases, idempotent checkout, SSE inventory updates, and `SKIP LOCKED` expiration workers.
-
-After running and recording K6 results, replace placeholders only with measured values:
-
-> Validated `[N]` concurrent checkout attempts with zero oversubscriptions; sustained `[RPS]` at `[P99] ms` P99 on `[hardware profile]` using reproducible K6 contention and soak workloads.
-
-## Intentional production gaps
-
-This is a focused systems MVP, not a payment processor. Production adoption would still require real authentication, PCI-compliant payments, fraud and abuse controls, a virtual waiting room, multi-region write ownership, durable event delivery, managed migrations, secret management, backups, and autoscaling policy.
+This is a systems project, not a ticketing business. Payments are simulated, identity is a cookie, and there is no bot defense. Every service, k6 included, shares one machine in the default setup, so the absolute numbers describe a laptop. The interesting results are the relative ones: same load, same hardware, different concurrency control.

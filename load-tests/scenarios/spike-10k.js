@@ -1,2 +1,0 @@
-import { session,availableSeats } from "../common.js";
-export const options={scenarios:{spike:{executor:"ramping-vus",startVUs:0,stages:[{target:1000,duration:"20s"},{target:Number(__ENV.VUS||10000),duration:"40s"},{target:Number(__ENV.VUS||10000),duration:"1m"},{target:0,duration:"30s"}],gracefulRampDown:"15s"}},thresholds:{http_req_failed:["rate<0.01"],http_req_duration:["p(99)<250"]}};export default function(){const c=session();availableSeats(c)}

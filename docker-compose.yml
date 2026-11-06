@@ -1,7 +1,20 @@
 name: flashseat
+
+x-api-env: &api-env
+  # API replicas reach Redis and PostgreSQL through Toxiproxy so the simulator
+  # can inject real network faults.
+  DATABASE_URL: postgres://flashseat:flashseat@toxiproxy:5433/flashseat?sslmode=disable
+  REDIS_ADDR: toxiproxy:6380
+  WEB_ORIGIN: http://localhost:3000
+  CONTROL_URL: http://control:8081
+  ADMISSION_SECRET: ${ADMISSION_SECRET:-local-development-only}
+  DB_MAX_CONNS: "40"
+  LAB_ENABLED: "true"
+
 services:
   postgres:
     image: postgres:17.6-alpine
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=1GB", "-c", "max_wal_size=2GB"]
     environment:
       POSTGRES_DB: flashseat
       POSTGRES_USER: flashseat
@@ -15,62 +28,96 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
   redis:
     image: redis:8.2.0-alpine
-    command: ["redis-server","--appendonly","yes","--notify-keyspace-events","Ex"]
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
     ports: ["6379:6379"]
     volumes: ["redis-data:/data"]
     healthcheck:
-      test: ["CMD","redis-cli","ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 20
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes: ["./infra/toxiproxy:/config:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   api:
     build: ./apps/api
+    environment: *api-env
+    deploy:
+      replicas: 2
+    restart: always
+    depends_on:
+      toxiproxy: { condition: service_started }
+      control: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "/api", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+      start_interval: 1s
+
+  control:
+    build: ./apps/api
+    entrypoint: ["/control"]
     environment:
       DATABASE_URL: postgres://flashseat:flashseat@postgres:5432/flashseat?sslmode=disable
-      REDIS_ADDR: redis:6379
+      DIRECT_REDIS_ADDR: redis:6379
       WEB_ORIGIN: http://localhost:3000
-      HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-600}
-      LAB_ENABLED: "true"
+      API_URL: http://api:8080
       LOADGEN_URL: http://loadgen:8090
-      BENCHMARK_TARGET_URL: http://api:8080/api/v1
-    ports: ["8080:8080"]
+      LOAD_TARGET_URL: http://gateway:8080/api/v1
+      TOXIPROXY_URL: http://toxiproxy:8474
+      SWEEP_INTERVAL_MS: "500"
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD","/api","-healthcheck"]
-      interval: 10s
+      test: ["CMD", "/control", "-healthcheck"]
+      interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 20s
+      start_interval: 1s
+
+  gateway:
+    image: nginx:1.29.1-alpine
+    volumes: ["./infra/gateway/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    ports: ["8080:8080"]
+    ulimits: { nofile: { soft: 65536, hard: 65536 } }
+    depends_on:
+      api: { condition: service_healthy }
+      control: { condition: service_healthy }
+
   loadgen:
     build: ./apps/loadgen
     environment:
-      ALLOWED_TARGET_URL: http://api:8080/api/v1
-    depends_on:
-      api: { condition: service_healthy }
+      ALLOWED_TARGET_URL: http://gateway:8080/api/v1
+    ulimits: { nofile: { soft: 65536, hard: 65536 } }
+    depends_on: [gateway]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/health"]
       interval: 10s
       timeout: 3s
       retries: 5
-  worker:
-    build: ./apps/api
-    entrypoint: ["/worker"]
-    environment:
-      DATABASE_URL: postgres://flashseat:flashseat@postgres:5432/flashseat?sslmode=disable
-      REDIS_ADDR: redis:6379
-      SWEEP_INTERVAL_SECONDS: 2
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
+
   web:
-    build: .
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080/api/v1
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080/api/v1
     ports: ["3000:3000"]
-    depends_on: [api]
+    depends_on: [gateway]
+
   prometheus:
     image: prom/prometheus:v3.5.0
     profiles: ["observability"]
@@ -82,4 +129,5 @@ services:
     environment: { GF_SECURITY_ADMIN_PASSWORD: flashseat }
     volumes: ["./infra/grafana/provisioning:/etc/grafana/provisioning:ro"]
     ports: ["3001:3000"]
+
 volumes: { postgres-data: {}, redis-data: {} }

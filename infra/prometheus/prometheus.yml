@@ -1,4 +1,4 @@
 global: { scrape_interval: 5s }
 scrape_configs:
   - job_name: flashseat-api
-    static_configs: [{ targets: ["api:8080"] }]
+    dns_sd_configs: [{ names: ["api"], type: A, port: 8080 }]

@@ -1,3 +1,5 @@
-import { LabConsole } from "./lab/console";
+import { LiveConsole } from "@/components/LiveConsole";
 
-export default function Home() { return <LabConsole />; }
+export default function Home() {
+  return <LiveConsole />;
+}

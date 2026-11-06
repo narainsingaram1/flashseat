@@ -1,21 +1,18 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import "./globals.css";
 
-export async function generateMetadata(): Promise<Metadata> {
-  const incoming = await headers();
-  const host = incoming.get("x-forwarded-host") || incoming.get("host") || "localhost:3000";
-  const protocol = incoming.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
-  const metadataBase = new URL(`${protocol}://${host}`);
-  return {
-    metadataBase, title: "FlashSeat Lab — Prove zero double-bookings",
-    description: "Run external K6 clients against a real seat-hold HTTP API and inspect persisted latency, throughput, and database correctness evidence.",
-    icons: { icon: "/favicon.svg" },
-    openGraph: { title: "FlashSeat", description: "Engineered for the rush.", images: [{ url: "/og.png", width: 1200, height: 630 }] },
-    twitter: { card: "summary_large_image", title: "FlashSeat", description: "Engineered for the rush.", images: ["/og.png"] },
-  };
-}
+export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"),
+  title: "FlashSeat — live ticket on-sale simulator",
+  description: "Thousands of real HTTP buyers race for seats while a Go reservation engine, Redis, and PostgreSQL keep every seat sold exactly once. Break it live and watch it hold.",
+  icons: { icon: "/favicon.svg" },
+  openGraph: { title: "FlashSeat", description: "A ticket on-sale you can watch, and break.", images: [{ url: "/og.png", width: 1200, height: 630 }] },
+};
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
 }
