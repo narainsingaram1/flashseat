@@ -338,7 +338,8 @@ export function LiveConsole() {
         <>
           <RunSummary run={finished} />
           <div className="after-actions">
-            <Link href={`/runs/${finished.id}`} className="button">Watch the replay</Link>
+            <button className="button" disabled={running || starting} onClick={() => { updateRace(null); launch({ mode: finished.mode, preset: finished.preset, buyers: finished.buyers, arrivalSeconds: finished.arrivalSeconds, admitRate: finished.admitRate, holdTtlSeconds: finished.holdTtlSeconds }); }}>Run it again</button>
+            <Link href={`/runs/${finished.id}`} className="button ghost">Watch the replay</Link>
             <Link href="/compare" className="button ghost">Compare engines side by side</Link>
           </div>
         </>

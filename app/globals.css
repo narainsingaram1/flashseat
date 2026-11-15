@@ -293,3 +293,28 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Replay transport */
+.player { flex-wrap: wrap; row-gap: 8px; }
+.transport { display: flex; align-items: center; gap: 4px; flex: none; }
+.tbtn { width: 32px; height: 32px; border-radius: var(--r-md); border: 1px solid transparent; background: transparent; color: var(--text-2); cursor: pointer; display: grid; place-items: center; }
+.tbtn:hover { background: var(--surface-3); color: var(--text); border-color: var(--line); }
+.player .play:hover { filter: brightness(0.9); }
+.player button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.player input[type=range] { min-width: 160px; accent-color: var(--text); }
+.keys { flex-basis: 100%; margin: 0; font-size: 11px; color: var(--text-3); display: flex; flex-wrap: wrap; gap: 16px; }
+.keys span { display: inline-flex; align-items: center; gap: 4px; }
+.keys kbd { font: 11px var(--mono); padding: 1px 6px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; color: var(--text-2); background: var(--surface-2); }
+
+/* Compare head-to-head */
+.scoreboard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.score { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.score b { color: var(--text); font-weight: 500; font-size: 16px; margin-right: 2px; }
+.score .bad b { color: var(--red); }
+.score .good b { color: var(--green); }
+.crowd-warn { margin: 12px 0 0; padding: 8px 12px; border: 1px solid var(--line-2); border-left: 2px solid var(--amber); border-radius: var(--r-md); color: var(--text-2); }
+.compare .replay-stage .chart-legend { display: none; }
+
+/* Keep compare side by side down to tablet width */
+@media (max-width: 1100px) { .compare { grid-template-columns: 1fr 1fr; gap: 12px; } .compare .panel { padding: 12px; } }
+@media (max-width: 760px) { .compare, .scoreboard { grid-template-columns: 1fr; } .keys { display: none; } }

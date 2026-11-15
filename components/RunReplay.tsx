@@ -9,10 +9,11 @@ import { loadRun, PlayerBar, ReplayStage, timelineEnd, usePlayer, type LoadedRun
 export function RunReplay({ id }: { id: string }) {
   const [loaded, setLoaded] = useState<LoadedRun | null>(null);
   const [error, setError] = useState("");
-  useEffect(() => {
-    loadRun(id).then(setLoaded).catch((e) => setError(e.message));
-  }, [id]);
   const player = usePlayer(loaded ? [timelineEnd(loaded.timeline)] : []);
+  const { setPlaying } = player;
+  useEffect(() => {
+    loadRun(id).then((l) => { setLoaded(l); setPlaying(true); }).catch((e) => setError(e.message));
+  }, [id, setPlaying]);
 
   return (
     <main className="app">
