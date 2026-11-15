@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { Run } from "@/lib/api";
 import { fmt, getJSON, presetName } from "@/lib/api";
-import { Nav } from "./Nav";
+import { EngineTag, Nav } from "./Nav";
 
 export function RunList() {
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -27,10 +27,10 @@ export function RunList() {
   return (
     <main className="app">
       <Nav active="runs" />
-      <section className="hero">
-        <div>
-          <h1>Every sale, recorded.</h1>
-          <p>Each run keeps its full seat-by-seat timeline, server telemetry, the k6 client summary, and the final PostgreSQL invariant check. Pick two to compare.</p>
+      <section className="intro">
+        <div className="intro-copy">
+          <h1>Every sale, recorded</h1>
+          <p>Each run keeps its full seat-by-seat timeline, server telemetry, the k6 client summary, and the final PostgreSQL invariant check. Tick two to replay them side by side.</p>
         </div>
         {runs && (
           <div className="totals">
@@ -47,8 +47,8 @@ export function RunList() {
         <section className="panel">
           <div className="table-head">
             <h2>Runs</h2>
-            <button className="primary small" disabled={picked.length !== 2} onClick={() => router.push(`/compare?a=${picked[0]}&b=${picked[1]}`)}>
-              Compare {picked.length}/2 selected
+            <button className="primary" disabled={picked.length !== 2} onClick={() => router.push(`/compare?a=${picked[0]}&b=${picked[1]}`)}>
+              {picked.length === 2 ? "Compare these two" : `Select ${2 - picked.length} more to compare`}
             </button>
           </div>
           <div className="table-scroll">
@@ -63,7 +63,7 @@ export function RunList() {
                     <tr key={r.id} className={picked.includes(r.id) ? "picked" : ""}>
                       <td><input type="checkbox" aria-label="Select for comparison" disabled={!r.hasTimeline} checked={picked.includes(r.id)} onChange={() => toggle(r.id)} /></td>
                       <td>{new Date(r.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</td>
-                      <td><span className={`mode-tag ${r.mode}`}>{r.mode === "safe" ? "FlashSeat" : "Naive"}</span>{r.status !== "succeeded" && <span className="status">{r.status}</span>}</td>
+                      <td><EngineTag mode={r.mode} short />{r.status !== "succeeded" && <span className="status">{r.status}</span>}</td>
                       <td>{presetName[r.preset] ?? r.preset}</td>
                       <td>{fmt.n(r.buyers)}</td>
                       <td>{inv ? `${fmt.n(inv.seatsSold)} / ${fmt.n(r.seats)}` : "—"}</td>
@@ -71,7 +71,7 @@ export function RunList() {
                       <td className={inv && inv.doubleSold > 0 ? "bad" : "good"}>{inv ? fmt.n(inv.doubleSold) : "—"}</td>
                       <td>{fmt.n(m.peakRequestsPerSec)}</td>
                       <td>{fmt.ms(k.holdP99Ms ?? m.holdP99Ms)}</td>
-                      <td>{r.hasTimeline ? <Link href={`/runs/${r.id}`}>Replay →</Link> : <span className="muted">{r.failureMessage ? "failed" : "—"}</span>}</td>
+                      <td>{r.hasTimeline ? <Link href={`/runs/${r.id}`} className="link">Replay</Link> : <span className="muted">{r.failureMessage ? "failed" : "—"}</span>}</td>
                     </tr>
                   );
                 })}

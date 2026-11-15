@@ -29,14 +29,14 @@ const has = (html, text) => assert.ok(html.includes(text), `expected page to con
 test("live sale page renders controls and correctness panel", async () => {
   const { status, html } = await page("/");
   assert.equal(status, 200);
-  has(html, "Watch thousands of buyers fight for every seat");
+  has(html, "A ticket on-sale you can watch, and break");
   has(html, "Correctness, live from PostgreSQL");
-  has(html, "Configure the sale");
+  has(html, "Break something while buyers are active");
 });
 
 test("runs and compare pages render", async () => {
   has((await page("/runs")).html, "Every sale, recorded");
-  has((await page("/compare")).html, "Same crowd. Two engines");
+  has((await page("/compare")).html, "Same crowd, two engines");
 });
 
 test("replay route renders for any run id", async () => {

@@ -363,7 +363,7 @@ func (s *Service) execute(ctx context.Context, run store.Run) error {
 		s.Hub.SetPhase(PhaseDone)
 	}
 	s.Hub.Tick(time.Now())
-	slog.Info("simulation finished", "run", run.ID, "sold", final.SeatsSold, "double_sold", final.DoubleSold, "status", update.Status)
+	slog.Info("simulation finished", "run", run.ID, "sold", final.SeatsSold, "double_sold", final.DoubleSold, "backstop_hits", final.BackstopHits, "passed", final.Passed(), "status", update.Status)
 	return nil
 }
 
@@ -384,6 +384,7 @@ func (s *Service) metrics(run store.Run, final store.Invariants, saleStart, clie
 		"sellThroughPct":         pct(final.SeatsSold, run.Seats),
 		"doubleSold":             final.DoubleSold,
 		"overlapping":            final.OverlappingClaims,
+		"backstopHits":           final.BackstopHits,
 		"holdsCreated":           board.HoldsCreated,
 		"holdsExpired":           board.HoldsExpired,
 		"holdsReleased":          board.HoldsReleased,

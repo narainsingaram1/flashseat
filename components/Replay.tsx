@@ -6,12 +6,14 @@ import { fmt, getJSON } from "@/lib/api";
 import { Replayer } from "@/lib/board";
 import { SeatLegend, SeatMap } from "./SeatMap";
 import { ChartLegend, InvariantPanel, SeatBar, TrafficChart } from "./Panels";
+import { EngineTag } from "./Nav";
 
 export type LoadedRun = { run: Run; timeline: Timeline };
 
 export async function loadRun(id: string): Promise<LoadedRun> {
   const [run, timeline] = await Promise.all([getJSON<Run>(`/control/simulations/${id}`), getJSON<Timeline>(`/control/simulations/${id}/timeline`)]);
-  return { run, timeline };
+  // Go encodes an empty slice as null when a run had no faults injected.
+  return { run: { ...run, chaos: run.chaos ?? [] }, timeline: { ...timeline, chaos: timeline.chaos ?? [], series: timeline.series ?? [], frames: timeline.frames ?? [] } };
 }
 
 /** Plays one or more recorded runs on a shared clock. */
@@ -61,7 +63,7 @@ export function PlayerBar({ player }: { player: ReturnType<typeof usePlayer> }) 
   const { t, setT, playing, setPlaying, speed, setSpeed, end } = player;
   return (
     <div className="player">
-      <button className="play" onClick={() => { if (t >= end) setT(0); setPlaying(!playing); }} aria-label={playing ? "Pause" : "Play"}>{playing ? "❚❚" : "▶"}</button>
+      <button className="play" onClick={() => { if (t >= end) setT(0); setPlaying(!playing); }} aria-label={playing ? "Pause" : "Play"}>{playing ? <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3.5" y="3" width="3" height="10" rx="1" fill="currentColor" /><rect x="9.5" y="3" width="3" height="10" rx="1" fill="currentColor" /></svg> : <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5Z" fill="currentColor" /></svg>}</button>
       <input type="range" min={0} max={Math.max(1, end)} step={50} value={t} onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }} aria-label="Replay position" />
       <span className="clock">{fmt.clock(t)} / {fmt.clock(end)}</span>
       <div className="speeds">
@@ -79,8 +81,8 @@ export function ReplayStage({ loaded, t, compact = false }: { loaded: LoadedRun;
     <div className="replay-stage">
       <div className="stage-head">
         <div>
-          <span className={`mode-tag ${loaded.run.mode}`}>{loaded.run.mode === "safe" ? "FlashSeat engine" : "Naive baseline"}</span>
-          <p className="muted">{fmt.n(counts.sold)} sold · {fmt.n(counts.held)} held{counts.conflict ? ` · ${fmt.n(counts.conflict)} double-booked` : ""}</p>
+          <EngineTag mode={loaded.run.mode} />
+          <p className="map-meta">{fmt.n(counts.sold)} sold · {fmt.n(counts.held)} held{counts.conflict ? ` · ${fmt.n(counts.conflict)} double-booked` : ""}</p>
         </div>
         <b className="sold-pct">{fmt.pct((counts.sold / total) * 100)}<small>sold</small></b>
       </div>

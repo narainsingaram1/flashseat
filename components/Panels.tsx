@@ -17,7 +17,7 @@ export function TrafficChart({ series, chaos, playhead, height = 150 }: { series
   const y = (v: number) => H - pad.b - (v / peak) * (H - pad.t - pad.b);
   const yl = (v: number) => H - pad.b - (v / peakLat) * (H - pad.t - pad.b);
   const bw = Math.max(1.5, (W - pad.l - pad.r) / Math.max(1, end / 1000) - 1.5);
-  const stacks: [keyof Point, string][] = [["holds", "#2fbf71"], ["checkouts", "#1b8a52"], ["conflicts", "#f2a33a"], ["soldOut", "#5b6472"], ["failures", "#ff4d4f"]];
+  const stacks: [keyof Point, string][] = [["holds", "#34c77b"], ["checkouts", "#1f7f4f"], ["conflicts", "#f0a63c"], ["soldOut", "#4a4c54"], ["failures", "#f0524f"]];
   const line = series.filter((p) => p.holdP99 > 0).map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${yl(p.holdP99).toFixed(1)}`).join("");
   return (
     <svg className="chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Requests per second and hold latency">
@@ -55,11 +55,11 @@ export function TrafficChart({ series, chaos, playhead, height = 150 }: { series
 export function ChartLegend() {
   return (
     <div className="legend small">
-      <span><i style={{ background: "#2fbf71" }} />Holds won</span>
-      <span><i style={{ background: "#1b8a52" }} />Checkouts</span>
-      <span><i style={{ background: "#f2a33a" }} />Lost race (409)</span>
-      <span><i style={{ background: "#5b6472" }} />Sold out</span>
-      <span><i style={{ background: "#ff4d4f" }} />Failed (5xx)</span>
+      <span><i style={{ background: "#34c77b" }} />Holds won</span>
+      <span><i style={{ background: "#1f7f4f" }} />Checkouts</span>
+      <span><i style={{ background: "#f0a63c" }} />Lost race</span>
+      <span><i style={{ background: "#4a4c54" }} />Sold out</span>
+      <span><i style={{ background: "#f0524f" }} />Failed</span>
       <span><i className="line" />Hold P99</span>
     </div>
   );
@@ -99,20 +99,27 @@ type Check = { label: string; value: number; ok: boolean; hint: string };
 
 export function InvariantPanel({ inv, mode }: { inv: Invariants | null; mode: string }) {
   const checks: Check[] = inv ? [
-    { label: "Seats sold twice", value: inv.doubleSold, ok: inv.doubleSold === 0, hint: "order rows per seat > 1" },
     { label: "Overlapping claims", value: inv.overlappingClaims, ok: inv.overlappingClaims === 0, hint: "two live holds, or a hold on a sold seat" },
     { label: "Order totals wrong", value: inv.orderTotalErrors, ok: inv.orderTotalErrors === 0, hint: "order total ≠ sum of line items" },
     ...(mode === "safe" ? [
+      { label: "Caught only by the database", value: inv.backstopHits ?? 0, ok: (inv.backstopHits ?? 0) === 0, hint: "a seat unique index rejected a write the engine's own checks let through" },
       { label: "Stale holds", value: inv.staleHolds, ok: inv.staleHolds === 0, hint: "active > 5 s past expiry" },
       { label: "Redis ↔ Postgres drift", value: inv.redisDrift, ok: inv.redisDrift === 0, hint: inv.redisDrift < 0 ? "Redis unreachable or rebuilding" : "taken in Postgres, free in Redis" },
     ] : []),
   ] : [];
+  const dup = inv?.doubleSold ?? 0;
   return (
     <div className="checks">
-      {!inv && <p className="muted">Checked against PostgreSQL every second during a sale.</p>}
+      <div className={`headline-check ${!inv ? "idle" : dup ? "fail" : "pass"}`}>
+        <b>{inv ? fmt.n(dup) : "—"}</b>
+        <div>
+          <span>Seats sold twice</span>
+          <small>{!inv ? "Checked against PostgreSQL every second during a sale" : dup ? "Order rows say these seats belong to two buyers" : mode === "safe" ? "Every seat has exactly one owner" : "None yet. Add buyers or shorten the arrival window"}</small>
+        </div>
+      </div>
       {checks.map((c) => (
         <div key={c.label} className={`check ${c.ok ? "pass" : c.value < 0 ? "unknown" : "fail"}`} title={c.hint}>
-          <span className="dot" />
+          <i className="sq" />
           <span className="label">{c.label}</span>
           <b>{c.value < 0 ? "?" : fmt.n(c.value)}</b>
         </div>

@@ -40,10 +40,11 @@ export function Compare({ a: wantA, b: wantB }: { a: string; b: string }) {
   return (
     <main className="app">
       <Nav active="compare" />
-      <section className="hero">
-        <div>
-          <h1>Same crowd. Two engines.</h1>
+      <section className="intro">
+        <div className="intro-copy">
+          <h1>Same crowd, two engines</h1>
           <p>Both replays run on one clock. The naive engine reads availability and then writes, with no lock between the two; under real concurrency, buyers slip into that gap and the same seat is sold twice. Red squares are seats PostgreSQL recorded as sold to more than one buyer.</p>
+          <p className="muted small">Fastest way to fill this page: Race both engines on the live sale.</p>
         </div>
       </section>
       {error && <p className="error panel">{error}</p>}

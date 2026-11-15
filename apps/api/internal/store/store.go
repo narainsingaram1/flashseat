@@ -80,6 +80,41 @@ func mapErr(err error) error {
 	return err
 }
 
+// seatBackstops are the unique indexes that keep a seat from being held or
+// sold twice. The reservation functions check for both conditions before
+// writing, so hitting one of these means those checks let a collision through.
+var seatBackstops = map[string]bool{
+	"one_live_hold_per_seat":  true, // hold_items: one live hold per seat
+	"order_items_seat_id_key": true, // order_items: each seat sold once
+}
+
+// backstopConstraint returns the seat-safety index err violated, if any.
+func backstopConstraint(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && seatBackstops[pgErr.ConstraintName] {
+		return pgErr.ConstraintName, true
+	}
+	return "", false
+}
+
+// recordBackstop durably logs a backstop hit. It runs on its own short
+// context so a buyer cancelling the request cannot erase the evidence. The
+// query names the event directly for holds, or through the hold for checkout.
+func (s *Store) recordBackstop(ctx context.Context, err error, op, eventSQL string, eventArg any, actor string) error {
+	name, ok := backstopConstraint(err)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_, recErr := s.Pool.Exec(ctx, `INSERT INTO backstop_hits(event_id,operation,constraint_name,actor) SELECT `+eventSQL+`,$2,$3,$4`,
+		eventArg, op, name, actor)
+	if recErr != nil {
+		return fmt.Errorf("record backstop hit on %s: %w", name, recErr)
+	}
+	return nil
+}
+
 // ErrReplayRace means a concurrent request with the same idempotency key won;
 // retrying the call returns its result.
 var ErrReplayRace = errors.New("concurrent request with the same idempotency key")
@@ -223,6 +258,9 @@ func (s *Store) CreateHold(ctx context.Context, eventID, userID, key, token stri
 	err := s.Pool.QueryRow(ctx, `SELECT o_hold::text,o_replayed,o_expires,o_indexes FROM fs_create_hold($1,$2,$3,$4,$5,$6)`,
 		eventID, userID, key, token, indexes, actor).Scan(&r.ID, &r.Replayed, &r.ExpiresAt, &idx)
 	r.Indexes = ints(idx)
+	if recErr := s.recordBackstop(ctx, err, "hold", "$1::text", eventID, actor); recErr != nil {
+		return r, recErr
+	}
 	return r, mapErr(err)
 }
 
@@ -241,6 +279,9 @@ func (s *Store) Checkout(ctx context.Context, holdID, userID, key, actor string)
 	err := s.Pool.QueryRow(ctx, `SELECT o_order::text,o_reference,o_total,o_created,o_replayed,o_event,o_token::text,o_indexes FROM fs_checkout($1,$2,$3,$4)`,
 		holdID, userID, key, actor).Scan(&r.OrderID, &r.Reference, &r.TotalCents, &r.CreatedAt, &r.Replayed, &r.EventID, &r.Token, &idx)
 	r.Indexes = ints(idx)
+	if recErr := s.recordBackstop(ctx, err, "checkout", "(SELECT event_id FROM holds WHERE id=$1::uuid)", holdID, actor); recErr != nil {
+		return r, recErr
+	}
 	return r, mapErr(err)
 }
 

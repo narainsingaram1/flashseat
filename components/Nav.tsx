@@ -4,7 +4,11 @@ export function Nav({ active, status }: { active: "live" | "runs" | "compare"; s
   return (
     <header className="nav">
       <Link href="/" className="brand" aria-label="FlashSeat home">
-        <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#1a1f26" /><rect x="6" y="8" width="5" height="5" rx="1" fill="#2fbf71" /><rect x="13.5" y="8" width="5" height="5" rx="1" fill="#2fbf71" /><rect x="21" y="8" width="5" height="5" rx="1" fill="#f2a33a" /><rect x="6" y="15.5" width="5" height="5" rx="1" fill="#3a414c" /><rect x="13.5" y="15.5" width="5" height="5" rx="1" fill="#2fbf71" /><rect x="21" y="15.5" width="5" height="5" rx="1" fill="#3a414c" /><rect x="6" y="23" width="20" height="2" rx="1" fill="#e8eaed" /></svg>
+        <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+          <rect x="1" y="2" width="5" height="5" rx="1" fill="#34c77b" /><rect x="7.5" y="2" width="5" height="5" rx="1" fill="#34c77b" /><rect x="14" y="2" width="5" height="5" rx="1" fill="#f0a63c" />
+          <rect x="1" y="8.5" width="5" height="5" rx="1" fill="#3a3c43" /><rect x="7.5" y="8.5" width="5" height="5" rx="1" fill="#34c77b" /><rect x="14" y="8.5" width="5" height="5" rx="1" fill="#3a3c43" />
+          <rect x="1" y="15.5" width="18" height="2" rx="1" fill="#ececee" />
+        </svg>
         FlashSeat
       </Link>
       <nav>
@@ -19,5 +23,10 @@ export function Nav({ active, status }: { active: "live" | "runs" | "compare"; s
 
 export function PhasePill({ phase, connected = true }: { phase: string; connected?: boolean }) {
   const label: Record<string, string> = { idle: "Idle", preparing: "Building venue", selling: "Sale live", settling: "Settling holds", done: "Finished", failed: "Failed" };
-  return <span className={`pill phase-${connected ? phase : "offline"}`}><i />{connected ? label[phase] ?? phase : "Reconnecting"}</span>;
+  return <span className={`phase phase-${connected ? phase : "offline"}`}><i className="sq" />{connected ? label[phase] ?? phase : "Reconnecting"}</span>;
+}
+
+export function EngineTag({ mode, short = false }: { mode: string; short?: boolean }) {
+  const name = mode === "safe" ? "FlashSeat" : "Naive";
+  return <span className={`engine-tag ${mode}`}><i className="sq" />{short ? name : mode === "safe" ? "FlashSeat engine" : "Naive baseline"}</span>;
 }

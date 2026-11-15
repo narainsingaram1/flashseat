@@ -43,6 +43,7 @@ func (s *Store) ResetEvent(ctx context.Context, c SaleConfig) (int64, error) {
 		`DELETE FROM hold_items WHERE hold_id IN (SELECT id FROM holds WHERE event_id=$1)`,
 		`DELETE FROM holds WHERE event_id=$1`,
 		`DELETE FROM naive_claims WHERE event_id=$1`,
+		`DELETE FROM backstop_hits WHERE event_id=$1`,
 		`DELETE FROM seats WHERE event_id=$1`,
 		`DELETE FROM sections WHERE event_id=$1`,
 	} {
@@ -267,6 +268,7 @@ type Invariants struct {
 	CheckedAt         time.Time `json:"checkedAt"`
 	DoubleSold        int       `json:"doubleSold"`        // seats sold to more than one buyer
 	OverlappingClaims int       `json:"overlappingClaims"` // seats under two live claims, or a live claim on a sold seat
+	BackstopHits      int       `json:"backstopHits"`      // writes a seat unique index rejected after the engine's own checks passed them
 	StaleHolds        int       `json:"staleHolds"`        // active holds more than 5 s past expiry
 	OrderTotalErrors  int       `json:"orderTotalErrors"`  // orders whose total differs from their line items
 	SeatsSold         int       `json:"seatsSold"`
@@ -276,9 +278,12 @@ type Invariants struct {
 	RedisDrift        int       `json:"redisDrift"` // seats PostgreSQL says are taken that Redis reports free
 }
 
-// Passed reports whether every safety invariant holds.
+// Passed reports whether every safety invariant holds. In safe mode the unique
+// indexes make DoubleSold and most OverlappingClaims impossible by
+// construction, so BackstopHits is the check that can actually catch a broken
+// engine: any hit means a collision got past the locks and checks.
 func (i Invariants) Passed() bool {
-	return i.DoubleSold == 0 && i.OverlappingClaims == 0 && i.OrderTotalErrors == 0
+	return i.DoubleSold == 0 && i.OverlappingClaims == 0 && i.OrderTotalErrors == 0 && i.BackstopHits == 0
 }
 
 func (s *Store) CheckInvariants(ctx context.Context, eventID, mode string) (Invariants, error) {
@@ -304,7 +309,8 @@ func (s *Store) CheckInvariants(ctx context.Context, eventID, mode string) (Inva
 		(SELECT count(*) FROM order_items oi JOIN seats s ON s.id=oi.seat_id WHERE s.event_id=$1),
 		(SELECT count(*) FROM hold_items hi JOIN holds h ON h.id=hi.hold_id WHERE h.event_id=$1 AND hi.released_at IS NULL AND h.status='active' AND h.expires_at>now()),
 		(SELECT count(*) FROM orders o JOIN holds h ON h.id=o.hold_id WHERE h.event_id=$1),
-		(SELECT coalesce(sum(o.total_cents),0) FROM orders o JOIN holds h ON h.id=o.hold_id WHERE h.event_id=$1)`, eventID).
-		Scan(&inv.DoubleSold, &inv.OverlappingClaims, &inv.StaleHolds, &inv.OrderTotalErrors, &inv.SeatsSold, &inv.SeatsHeld, &inv.Orders, &inv.RevenueCents)
+		(SELECT coalesce(sum(o.total_cents),0) FROM orders o JOIN holds h ON h.id=o.hold_id WHERE h.event_id=$1),
+		(SELECT count(*) FROM backstop_hits WHERE event_id=$1)`, eventID).
+		Scan(&inv.DoubleSold, &inv.OverlappingClaims, &inv.StaleHolds, &inv.OrderTotalErrors, &inv.SeatsSold, &inv.SeatsHeld, &inv.Orders, &inv.RevenueCents, &inv.BackstopHits)
 	return inv, err
 }

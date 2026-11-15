@@ -10,7 +10,7 @@ export type Point = {
   requests: number; holdP50: number; holdP99: number; sold: number; held: number; waiting: number;
 };
 export type Invariants = {
-  checkedAt: string; doubleSold: number; overlappingClaims: number; staleHolds: number; orderTotalErrors: number;
+  checkedAt: string; doubleSold: number; overlappingClaims: number; backstopHits?: number; staleHolds: number; orderTotalErrors: number;
   seatsSold: number; seatsHeld: number; orders: number; revenueCents: number; redisDrift: number;
 };
 export type ChaosMark = { t: number; action: string; event: "start" | "end"; detail: string };
@@ -25,7 +25,7 @@ export type Run = {
 
 export type Metrics = Partial<{
   seats: number; buyers: number; mode: string; seatsSold: number; orders: number; revenueCents: number; sellThroughPct: number;
-  doubleSold: number; overlapping: number; holdsCreated: number; holdsExpired: number; holdsReleased: number; resoldSeats: number;
+  doubleSold: number; overlapping: number; backstopHits: number; holdsCreated: number; holdsExpired: number; holdsReleased: number; resoldSeats: number;
   serverRequests: number; peakRequestsPerSec: number; peakHoldAttemptsPerSec: number; holdP50Ms: number; holdP95Ms: number;
   holdP99Ms: number; checkoutP99Ms: number; responses: Record<string, number>; clientDurationMs: number; lastSaleMs: number;
   soldOutMs: number; k6Version: string;

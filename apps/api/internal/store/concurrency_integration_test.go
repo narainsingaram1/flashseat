@@ -174,3 +174,40 @@ func TestOneActiveHoldPerBuyer(t *testing.T) {
 		t.Fatalf("second concurrent hold allowed: %v", err)
 	}
 }
+
+// A write the unique index rejects is logged and fails the run's invariants,
+// even though no seat ends up sold twice.
+func TestBackstopHitFailsInvariants(t *testing.T) {
+	s := open(t, time.Minute)
+	ctx := context.Background()
+	if err := hold(s, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := hold(s, 5); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CheckInvariants(ctx, testEvent, "safe")
+	if err != nil || !inv.Passed() || inv.BackstopHits != 0 {
+		t.Fatalf("before: %+v err=%v", inv, err)
+	}
+	// Bypass fs_create_hold's checks and add seat 3 to the other buyer's hold,
+	// as a regressed engine would; only the unique index stops it.
+	_, err = s.Pool.Exec(ctx, `INSERT INTO hold_items(hold_id,seat_id,price_cents)
+		SELECT hi.hold_id, s3.id, s3.price_cents
+		  FROM hold_items hi JOIN seats s5 ON s5.id=hi.seat_id AND s5.seat_index=5,
+		       seats s3
+		 WHERE s5.event_id=$1 AND s3.event_id=$1 AND s3.seat_index=3`, testEvent)
+	if _, ok := backstopConstraint(err); !ok {
+		t.Fatalf("want a one_live_hold_per_seat violation, got %v", err)
+	}
+	if err := s.recordBackstop(ctx, err, "hold", "$1::text", testEvent, "test"); err != nil {
+		t.Fatal(err)
+	}
+	inv, err = s.CheckInvariants(ctx, testEvent, "safe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.DoubleSold != 0 || inv.BackstopHits != 1 || inv.Passed() {
+		t.Fatalf("after: %+v, want 0 double-sold, 1 backstop hit, not passed", inv)
+	}
+}

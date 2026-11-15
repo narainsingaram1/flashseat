@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Layout, Row } from "@/lib/api";
 import type { Board } from "@/lib/board";
 
-const COLORS = ["#262c36", "#f2a33a", "#2fbf71", "#4c8dff", "#ff4d4f"];
+const COLORS = ["#2a2c32", "#f0a63c", "#34c77b", "#5b8def", "#f0524f"];
 const STATE_NAMES = ["Open", "Held", "Sold", "Back on sale", "Double-booked"];
 const FLASH_MS = 700;
 const TOP_ROWS = 3; // stage + section labels above the first section
@@ -60,15 +60,15 @@ export function SeatMap({ layout, board, compact = false }: { layout: Layout; bo
       const { cell, ox, oy, w, h } = geom.current;
       ctx.clearRect(0, 0, w, h);
       // Stage
-      ctx.fillStyle = "#e8eaed";
+      ctx.fillStyle = "#8a8b92";
       const stageW = Math.min(w * 0.36, cell * layout.width * 0.4);
       ctx.fillRect(w / 2 - stageW / 2, 2, stageW, Math.max(3, cell * 0.7));
       if (!compact) {
-        ctx.fillStyle = "#8b93a1";
-        ctx.font = `600 ${Math.max(9, Math.min(11, cell * 2.2))}px ui-sans-serif, system-ui`;
+        ctx.fillStyle = "#7c7d85";
+        ctx.font = `500 ${Math.max(10, Math.min(12, cell * 2.2))}px ui-sans-serif, system-ui`;
         ctx.textAlign = "center";
         for (const s of layout.sections) {
-          ctx.fillText(s.name.toUpperCase(), ox + (s.x + s.width / 2) * cell, oy + s.y * cell - cell * 0.6);
+          ctx.fillText(s.name, ox + (s.x + s.width / 2) * cell, oy + s.y * cell - cell * 0.6);
         }
       }
       const gap = cell >= 4 ? 1 : cell >= 2.5 ? 0.6 : 0.3;
@@ -125,7 +125,7 @@ export function SeatLegend({ naive = false }: { naive?: boolean }) {
       {items.map((s) => (
         <span key={s}><i style={{ background: COLORS[s] }} />{STATE_NAMES[s]}</span>
       ))}
-      {!naive && <span><i style={{ background: COLORS[4] }} />Double-booked (never expected)</span>}
+      {!naive && <span className="dim"><i style={{ background: COLORS[4] }} />Double-booked (should never appear)</span>}
     </div>
   );
 }

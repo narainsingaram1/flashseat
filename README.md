@@ -75,6 +75,10 @@ make test-integration   # PostgreSQL + Redis: one winner per seat, no deadlocks,
 make test-web           # typecheck, lint, production build, rendered routes
 ```
 
+Correctness during a sale is judged from PostgreSQL. In safe mode, "seats sold twice" cannot rise above 0 because unique indexes forbid it, so the run also counts **backstop hits**: writes one of those indexes rejected after the engine's own locks and checks let them through. A safe run fails if there are any. The measured results above predate this check.
+
+Databases created before `008_backstop_hits.sql` need `make reset` (migrations only run on a fresh volume).
+
 CI runs all three on every push, plus a build of every service image.
 
 ## Repository map

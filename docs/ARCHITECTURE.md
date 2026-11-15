@@ -63,6 +63,7 @@ The Redis expiry is the PostgreSQL TTL plus 2.5 s. PostgreSQL computes `expires_
 - Lazy expiry. Lapsed holds blocking the requested seats are expired inside the same transaction, so a seat can be resold the instant its hold lapses rather than at the next sweep.
 - The one-active-hold-per-buyer rule, enforced by a partial unique index.
 - The final guards: a partial unique index on unreleased `hold_items.seat_id`, and `UNIQUE(order_items.seat_id)`. Even if the application regressed, PostgreSQL would reject a double sale.
+- Because those guards make "seats sold twice" 0 by construction, that count alone cannot show the engine works. Every time one of them rejects a write, the store logs a row in `backstop_hits` before returning the usual `409`, and a safe run fails its invariants if any row exists. Zero hits means the row locks and the functions' own checks stopped every collision before the indexes had to.
 
 Custom SQLSTATEs (`FS409`, `FS410`, …) map straight to HTTP statuses.
 
