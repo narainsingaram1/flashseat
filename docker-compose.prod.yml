@@ -1,0 +1,65 @@
+# Production overlay for a single public server.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Caddy is the only public entry point: it terminates HTTPS on $DOMAIN, serves
+# the web app at / and the API (including the SSE stream) at /api. PostgreSQL,
+# Redis, Toxiproxy, the gateway and the web container are reachable only on the
+# internal Docker network. Settings come from .env (see .env.example).
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    <<: *restart
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [web, gateway]
+
+  postgres:
+    <<: *restart
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  redis:
+    <<: *restart
+    ports: !reset []
+
+  toxiproxy:
+    <<: *restart
+
+  api:
+    environment:
+      DATABASE_URL: postgres://flashseat:${POSTGRES_PASSWORD}@toxiproxy:5433/flashseat?sslmode=disable
+      WEB_ORIGIN: https://${DOMAIN}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?set ADMISSION_SECRET in .env}
+
+  control:
+    environment:
+      DATABASE_URL: postgres://flashseat:${POSTGRES_PASSWORD}@postgres:5432/flashseat?sslmode=disable
+      WEB_ORIGIN: https://${DOMAIN}
+
+  gateway:
+    <<: *restart
+    ports: !reset []
+
+  loadgen:
+    <<: *restart
+
+  web:
+    <<: *restart
+    ports: !reset []
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://${DOMAIN}/api/v1
+        NEXT_PUBLIC_SITE_URL: https://${DOMAIN}
+
+volumes: { caddy-data: {}, caddy-config: {} }

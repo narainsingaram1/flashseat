@@ -1,4 +1,4 @@
-.PHONY: up down reset test test-go test-integration test-web
+.PHONY: up down reset test test-go test-integration test-web deploy deploy-logs
 
 up:
 	docker compose up --build
@@ -22,3 +22,12 @@ test-integration:
 
 test-web:
 	npm run typecheck && npm run lint && npm run build && npm test
+
+PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
+
+# Production: build and (re)start everything behind Caddy on $DOMAIN (.env).
+deploy:
+	$(PROD) up -d --build --remove-orphans
+
+deploy-logs:
+	$(PROD) logs -f --tail=100
