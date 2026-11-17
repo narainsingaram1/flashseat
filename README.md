@@ -33,6 +33,8 @@ Open http://localhost:3000, choose a venue and engine, and open the sale. Record
 
 `make reset` wipes the database, including recorded runs.
 
+To put it on the internet with HTTPS on your own domain, see [docs/DEPLOY.md](docs/DEPLOY.md). It covers one server and one command.
+
 ## What happens during a sale
 
 1. The control plane rebuilds the venue (1,170 or 9,000 seats), loads a fresh Redis seat bitmap, and opens the waiting room.
